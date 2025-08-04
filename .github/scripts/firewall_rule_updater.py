@@ -1,126 +1,99 @@
 #!/usr/bin/env python3
-"""
-Firewall Rule Updater (move updated rules to new request file)
--------------------------------------------------------------
-
-This script is used by the GitHub workflow that processes firewall update
-requests filed as issues.  For each update:
-
-* It parses the issue body to extract a new request ID and one or more
-  rule‑update blocks.  Each block contains the name of an existing rule and
-  optional new values for the source IPs, destination IPs, ports,
-  protocol, direction, CARID and justification.
-* It loads the current `auto_firewall_rules` JSON files from the
-  `firewall-requests/` directory and locates the rule to update.
-* For each rule, it records the **original request ID** from the rule’s
-  name.  If the new request ID differs from the original, the updated rule
-  is removed from its current file and appended to a new file named
-  `firewall-requests/REQ<newid>.auto.tfvars.json`.  Otherwise the rule is
-  updated in place in the original file.  This preserves safe concurrency:
-  updates for different request IDs never write to the same file, while
-  updates for the same request ID simply rewrite the rule in its original
-  context.
-* It validates the updated rule (CIDR formats, ports, protocol, direction,
-  CARID) before making any file changes.  If any rule fails validation, it
-  reports the errors and aborts without touching the filesystem.
-* After successfully writing files, it invokes `boundary_mapper.py` on each
-  changed file so that `src_vpc` and `dest_vpc` values are recalculated when
-  IP ranges cross boundaries.
-* It generates a human‑readable summary of changes in
-  `rule_update_summary.txt` for inclusion in the pull request body.
-
-This design keeps the rulebase consistent, avoids partial updates and
-accommodates concurrent requests.  If you specify a new request ID, your
-updated rule will appear in its own file; if you reuse the same request ID,
-your rule is simply updated in place.
-"""
-
 import re
 import sys
 import os
 import glob
 import json
 import ipaddress
-from typing import Dict, List, Tuple, Any
 
+"""
+This script is used by the GitHub workflow that processes firewall update
+requests.  It reads issue input from stdin, parses the requested updates and
+applies them to the existing `auto_firewall_rules` definitions in
+`firewall-requests/` files.  The updated rules are written back out to a
+new file prefixed with the new REQID.  Validation is performed on IP
+formats, ports, protocol, and naming conventions.  Note: this updater only
+modifies the rule fields provided by the user and preserves the existing
+`src_vpc`/`dest_vpc` assignments.  After running this script you should run
+`boundary_mapper.py` to recompute `src_vpc` and `dest_vpc` if any IP ranges
+change boundaries.
+"""
 
-# Allowed public ranges for oversize CIDRs
+# Only these oversized public ranges are allowed
 ALLOWED_PUBLIC_RANGES = [
-    ipaddress.ip_network("35.191.0.0/16"),
-    ipaddress.ip_network("130.211.0.0/22"),
-    ipaddress.ip_network("199.36.153.4/30"),
+    ipaddress.ip_network("35.191.0.0/16"),    # GCP health-check
+    ipaddress.ip_network("130.211.0.0/22"),   # GCP health-check
+    ipaddress.ip_network("199.36.153.4/30"),  # restricted googleapis
 ]
 
 
-def validate_reqid(reqid: str) -> bool:
-    return bool(re.fullmatch(r"REQ\d{7,8}", reqid or ""))
+def validate_reqid(reqid):
+    return bool(re.fullmatch(r"REQ\d{7,8}", reqid))
 
 
-def validate_carid(carid: str) -> bool:
-    return bool(re.fullmatch(r"\d{9}", carid or ""))
+def validate_carid(carid):
+    return bool(re.fullmatch(r"\d{9}", carid))
 
 
-def validate_ip(ip: str) -> bool:
+def validate_ip(ip):
     try:
         if "/" in ip:
             ipaddress.ip_network(ip, strict=False)
         else:
             ipaddress.ip_address(ip)
         return True
-    except Exception:
+    except:
         return False
 
 
-def validate_port(port: str) -> bool:
-    if re.fullmatch(r"\d{1,5}", port or ""):
+def validate_port(port):
+    if re.fullmatch(r"\d{1,5}", port):
         n = int(port)
         return 1 <= n <= 65535
-    if re.fullmatch(r"\d{1,5}-\d{1,5}", port or ""):
-        a, b = map(int, port.split("-"))
+    if re.fullmatch(r"\d{1,5}-\d{1,5}", port):
+        a, b = map(int, port.split('-'))
         return 1 <= a <= b <= 65535
     return False
 
 
-def validate_protocol(proto: str) -> bool:
-    return proto.lower() in {"tcp", "udp", "icmp", "sctp"}
+def validate_protocol(proto):
+    return proto in {"tcp", "udp", "icmp", "sctp"}
 
 
-def load_all_rules() -> Tuple[Dict[str, Dict[str, Any]], Dict[str, str]]:
-    rule_map: Dict[str, Dict[str, Any]] = {}
-    file_map: Dict[str, str] = {}
+def load_all_rules():
+    rule_map = {}
+    file_map = {}
     for path in glob.glob("firewall-requests/*.auto.tfvars.json"):
         with open(path) as f:
             data = json.load(f)
             for rule in data.get("auto_firewall_rules", []):
-                name = rule.get("name")
-                if name:
-                    rule_map[name] = rule
-                    file_map[name] = path
+                rule_map[rule["name"]] = rule
+                file_map[rule["name"]] = path
     return rule_map, file_map
 
 
-def update_rule_fields(rule: Dict[str, Any], updates: Dict[str, Any], new_reqid: str, new_carid: str) -> Dict[str, Any]:
-    """Return a modified copy of `rule` with updated fields and a regenerated name/description."""
-    updated = rule.copy()
-    idx = updated.get("_update_index", 1)
-    proto = updates.get("protocol") or updated.get("protocol", "tcp")
-    ports = updates.get("ports") or updated.get("ports", [])
-    carid = new_carid or updated.get("name", "AUTO-REQ-0-0").split("-")[2]
+def update_rule_fields(rule, updates, new_reqid, new_carid):
+    idx = rule.get("_update_index", 1)
+    proto = updates.get("protocol") or rule["protocol"]
+    ports = updates.get("ports") or rule["ports"]
+    direction = updates.get("direction") or rule.get("direction", "")
+    carid = new_carid or rule["name"].split("-")[2]
+
     new_name = f"AUTO-{new_reqid}-{carid}-{proto.upper()}-{','.join(ports)}-{idx}"
-    updated["name"] = new_name
-    # Apply updates to fields
-    for field, value in updates.items():
-        if value:
-            updated[field] = value.lower() if field in {"protocol", "direction"} else value
-    # Update description
-    desc_just = updates.get("description") or updated.get("description", "").split("|", 1)[-1]
-    updated["description"] = f"{new_name} | {desc_just.strip()}"
-    return updated
+    rule["name"] = new_name
+
+    for k, v in updates.items():
+        if v:
+            rule[k] = (v.lower() if k in ["protocol", "direction"] else v)
+
+    desc_just = updates.get("description") or rule.get("description", "").split("|", 1)[-1]
+    rule["description"] = f"{new_name} | {desc_just.strip()}"
+    return rule
 
 
-def validate_rule(rule: Dict[str, Any], idx: int) -> List[str]:
-    errors: List[str] = []
-    # IP validations
+def validate_rule(rule, idx=1):
+    errors = []
+    # IP/CIDR validations — require a slash-mask first
     for field in ["src_ip_ranges", "dest_ip_ranges"]:
         label = "Source" if field == "src_ip_ranges" else "Destination"
         for ip in rule.get(field, []):
@@ -131,58 +104,53 @@ def validate_rule(rule: Dict[str, Any], idx: int) -> List[str]:
                 errors.append(f"Rule {idx}: Invalid {label.lower()} IP/CIDR '{ip}'.")
                 continue
             net = ipaddress.ip_network(ip, strict=False)
+            # Disallow 0.0.0.0/0
             if net == ipaddress.ip_network("0.0.0.0/0"):
                 errors.append(f"Rule {idx}: {label} may not be 0.0.0.0/0.")
                 continue
+            # Disallow CIDRs larger than /24 unless in allowed public ranges
             if net.prefixlen < 24:
                 if not any(net.subnet_of(r) for r in ALLOWED_PUBLIC_RANGES):
                     errors.append(
                         f"Rule {idx}: {label} '{ip}' is /{net.prefixlen}, must be /24 or smaller unless it’s a GCP health‑check range."
                     )
                 continue
+            # Disallow other public ranges not in ALLOWED_PUBLIC_RANGES
             if not net.is_private:
                 if not any(net.subnet_of(r) for r in ALLOWED_PUBLIC_RANGES):
                     errors.append(f"Rule {idx}: Public {label} '{ip}' not in allowed GCP ranges.")
                 continue
-    # Port
-    for p in rule.get("ports", []):
-        if not validate_port(p):
-            errors.append(f"Rule {idx}: Invalid port or range: '{p}'.")
-    # Protocol
-    proto = rule.get("protocol", "").lower()
-    if not validate_protocol(proto):
+    # Port validation
+    for port in rule.get("ports", []):
+        if not validate_port(port):
+            errors.append(f"Rule {idx}: Invalid port or range: '{port}'.")
+    # Protocol validation
+    proto = rule.get("protocol", "")
+    if proto != proto.lower() or not validate_protocol(proto):
         errors.append(
-            f"Rule {idx}: Protocol must be one of: tcp, udp, icmp, sctp (lowercase). Found: '{rule.get('protocol')}'."
+            f"Rule {idx}: Protocol must be one of: tcp, udp, icmp, sctp (lowercase). Found: '{proto}'"
         )
-    # Direction
+    # Direction validation (optional)
     direction = rule.get("direction", "")
     if direction and direction.upper() not in {"INGRESS", "EGRESS"}:
         errors.append(
-            f"Rule {idx}: Direction must be INGRESS or EGRESS when provided. Found: '{direction}'."
+            f"Rule {idx}: Direction must be INGRESS or EGRESS when provided. Found: '{direction}'"
         )
-    # CARID
-    try:
-        carid = rule.get("name", "AUTO-REQ-0000000-0-0").split("-")[2]
-    except Exception:
-        carid = ""
+    # CARID in name
+    carid = rule["name"].split("-")[2]
     if not validate_carid(carid):
         errors.append(f"Rule {idx}: CARID must be 9 digits. Found: '{carid}'.")
     return errors
 
 
-def parse_blocks(issue_body: str) -> List[str]:
+def parse_blocks(issue_body):
     blocks = re.split(r"(?:^|\n)#{0,6}\s*Rule\s*\d+\s*\n", issue_body, flags=re.IGNORECASE)
     return [b for b in blocks[1:] if b.strip()]
 
 
-def extract_field(block: str, label: str) -> str:
-    m = re.search(rf"{re.escape(label)}.*?:\s*(.+)", block, re.IGNORECASE)
-    return m.group(1).strip() if m else ""
-
-
-def make_update_summary(idx: int, old_rule: Dict[str, Any], updates: Dict[str, Any], new_rule: Dict[str, Any]) -> str:
-    changes: List[str] = []
-    fields = [
+def make_update_summary(idx, rule_name, old_rule, updates, new_rule):
+    changes = []
+    labels = [
         ("src_ip_ranges", "Source"),
         ("dest_ip_ranges", "Destination"),
         ("ports", "Ports"),
@@ -191,14 +159,14 @@ def make_update_summary(idx: int, old_rule: Dict[str, Any], updates: Dict[str, A
         ("carid", "CARID"),
         ("description", "Justification"),
     ]
-    for field, label in fields:
-        old_val = old_rule.get(field)
-        new_val = updates.get(field) if updates.get(field) else None
-        if new_val is not None and old_val != new_val:
-            old_str = ','.join(old_val) if isinstance(old_val, list) else old_val
-            new_str = ','.join(new_val) if isinstance(new_val, list) else new_val
-            changes.append(f"{label}: `{old_str}` → `{new_str}`")
-    if old_rule.get("name") != new_rule.get("name"):
+    for k, label in labels:
+        old = old_rule.get(k)
+        new = updates.get(k) if updates.get(k) else None
+        if new is not None and old != new:
+            old_val = ','.join(old) if isinstance(old, list) else old
+            new_val = ','.join(new) if isinstance(new, list) else new
+            changes.append(f"{label}: `{old_val}` → `{new_val}`")
+    if old_rule["name"] != new_rule["name"]:
         changes.append(f"Rule Name: `{old_rule['name']}` → `{new_rule['name']}`")
     if not changes:
         changes = ["(No fields updated, only name/desc changed)"]
@@ -206,180 +174,160 @@ def make_update_summary(idx: int, old_rule: Dict[str, Any], updates: Dict[str, A
 
 
 def main():
-    # Read issue body from arg or stdin
+    # Read issue body either from argument or stdin
     if len(sys.argv) == 2:
         issue_body = sys.argv[1]
     else:
         issue_body = sys.stdin.read()
-
-    errors: List[str] = []
-    summaries: List[str] = []
-
-    # Extract new request ID
+    errors = []
+    summaries = []
+    # Parse new REQID
     m_reqid = re.search(r"New Request ID.*?:\s*([A-Z0-9]+)", issue_body, re.IGNORECASE)
     new_reqid = m_reqid.group(1).strip() if m_reqid else None
-    if not validate_reqid(new_reqid):
-        errors.append(f"New REQID must be 'REQ' followed by 7 or 8 digits. Found: '{new_reqid}'.")
-
-    # Split into rule blocks
-    blocks = parse_blocks(issue_body)
-    update_reqs: List[Dict[str, Any]] = []
-    for idx, block in enumerate(blocks, 1):
+    if not new_reqid or not validate_reqid(new_reqid):
+        errors.append(
+            f"New REQID must be 'REQ' followed by 7 or 8 digits. Found: '{new_reqid}'."
+        )
+    # Parse rule blocks
+    rule_blocks = parse_blocks(issue_body)
+    updates = []
+    for idx, block in enumerate(rule_blocks, 1):
         m_name = re.search(r"Current Rule Name.*?:\s*([^\n]+)", block, re.IGNORECASE)
         rule_name = m_name.group(1).strip() if m_name else None
         if not rule_name:
             errors.append(f"Rule {idx}: 'Current Rule Name' is required.")
             continue
-        update_reqs.append({
+
+        def extract(label):
+            m = re.search(rf"{label}.*?:\s*(.+)", block, re.IGNORECASE)
+            return m.group(1).strip() if m else ""
+
+        updates.append({
             "idx": idx,
             "rule_name": rule_name,
-            "src_ip_ranges": [ip.strip() for ip in extract_field(block, "New Source IP").split(",") if ip.strip()],
-            "dest_ip_ranges": [ip.strip() for ip in extract_field(block, "New Destination IP").split(",") if ip.strip()],
-            "ports": [p.strip() for p in extract_field(block, "New Port").split(",") if p.strip()],
-            "protocol": extract_field(block, "New Protocol"),
-            "direction": extract_field(block, "New Direction"),
-            "carid": extract_field(block, "New CARID"),
-            "description": extract_field(block, "New Business Justification"),
+            "src_ip_ranges": [ip.strip() for ip in extract("New Source IP").split(",") if ip.strip()],
+            "dest_ip_ranges": [ip.strip() for ip in extract("New Destination IP").split(",") if ip.strip()],
+            "ports": [p.strip() for p in extract("New Port").split(",") if p.strip()],
+            "protocol": extract("New Protocol"),
+            "direction": extract("New Direction"),
+            "carid": extract("New CARID"),
+            "description": extract("New Business Justification"),
         })
-
-    # If parse errors, output and exit
-    if errors:
-        print("VALIDATION_ERRORS_START")
-        for e in errors:
-            print(e)
-        print("VALIDATION_ERRORS_END")
-        sys.exit(1)
-
-    # Load rules and mapping
+    # Load existing rules
     rule_map, file_map = load_all_rules()
-
-    # Stage per-file updates: map file -> (remaining_rules, updated_rules).
-    # For the in‑place update workflow, `updated_rules` is a list of updated rule dicts.
-    files_to_update: Dict[str, Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]] = {}
-
-    # Process each update request
-    for req in update_reqs:
-        idx = req["idx"]
-        name = req["rule_name"]
-        if name not in rule_map:
-            errors.append(f"Rule {idx}: No rule found in codebase with name '{name}'.")
+    # Group updates by file path
+    updates_by_file = {}
+    for update in updates:
+        rule_name = update["rule_name"]
+        if rule_name not in file_map:
+            errors.append(
+                f"Rule {update['idx']}: No rule found in codebase with name '{rule_name}'."
+            )
             continue
-        file = file_map[name]
-        remaining, updated_list = files_to_update.get(file, ([], []))
-        # If this file has not been processed yet, load its rules
-        if not remaining and not updated_list:
-            with open(file) as f:
-                data = json.load(f)
-            for r in data.get("auto_firewall_rules", []):
-                remaining.append(r)
-        # Extract the rule to update
-        # We will process removal after staging
-        to_update = rule_map[name].copy()
-        # Determine original index within its file for stable naming
-        try:
-            idx_in_file = [r.get("name") for r in remaining].index(name) + 1
-        except ValueError:
-            idx_in_file = 1
-        to_update["_update_index"] = idx_in_file
+        file = file_map[rule_name]
+        updates_by_file.setdefault(file, []).append(update)
+    # Build proposed changes for each file.  We will update rules in place
+    # rather than removing them from the original file.  Each file will be
+    # rewritten with its updated and unchanged rules together.  We do not
+    # create a new request file for updates; instead the rule name itself
+    # is updated to reflect the new request ID.
+    files_to_update: dict = {}
+    changed_files = set()
+    for file, update_list in updates_by_file.items():
+        with open(file) as f:
+            file_data = json.load(f)
+        orig_rules = file_data.get("auto_firewall_rules", [])
+        new_rules: list = []
+        for idx, rule in enumerate(orig_rules, 1):
+            # Check if this rule should be updated
+            if rule["name"] in {u["rule_name"] for u in update_list}:
+                update = next(u for u in update_list if u["rule_name"] == rule["name"])
+                new_fields = {}
+                if update["src_ip_ranges"]:
+                    new_fields["src_ip_ranges"] = update["src_ip_ranges"]
+                if update["dest_ip_ranges"]:
+                    new_fields["dest_ip_ranges"] = update["dest_ip_ranges"]
+                if update["ports"]:
+                    new_fields["ports"] = update["ports"]
+                if update["protocol"]:
+                    new_fields["protocol"] = update["protocol"]
+                if update["direction"]:
+                    new_fields["direction"] = update["direction"]
+                if update["description"]:
+                    new_fields["description"] = update["description"]
+                new_carid = update["carid"]
+                to_update = rule.copy()
+                to_update["_update_index"] = idx
+                # Update the rule fields and name to include the new request ID
+                updated_rule = update_rule_fields(to_update, new_fields, new_reqid, new_carid)
+                rule_errors = validate_rule(updated_rule, idx=update["idx"])
+                if rule_errors:
+                    errors.extend(rule_errors)
+                new_rules.append(updated_rule)
+                summaries.append(
+                    make_update_summary(update["idx"], rule["name"], rule, update, updated_rule)
+                )
+            else:
+                new_rules.append(rule)
+        files_to_update[file] = new_rules
 
-        # Build updates dict based on provided fields
-        new_fields: Dict[str, Any] = {}
-        if req["src_ip_ranges"]:
-            new_fields["src_ip_ranges"] = req["src_ip_ranges"]
-        if req["dest_ip_ranges"]:
-            new_fields["dest_ip_ranges"] = req["dest_ip_ranges"]
-        if req["ports"]:
-            new_fields["ports"] = req["ports"]
-        if req["protocol"]:
-            new_fields["protocol"] = req["protocol"]
-        if req["direction"]:
-            new_fields["direction"] = req["direction"]
-        if req["description"]:
-            new_fields["description"] = req["description"]
-        new_carid = req["carid"]
-        # Generate the updated rule using the new request ID.  In the in‑place
-        # workflow, we ignore the original request ID and simply update the
-        # rule fields.  The updated rule will be written back to the same file.
-        updated_rule = update_rule_fields(to_update, new_fields, new_reqid, new_carid)
-        # Validate the updated rule
-        errs = validate_rule(updated_rule, idx)
-        if errs:
-            errors.extend(errs)
-        else:
-            updated_list.append(updated_rule)
-            summaries.append(make_update_summary(idx, to_update, req, updated_rule))
-        files_to_update[file] = (remaining, updated_list)
+    # If no validation errors, write back all updated files in place
+    if not errors:
+        for file, rules_list in files_to_update.items():
+            # Clean helper fields and remove empty values
+            cleaned = []
+            for r in rules_list:
+                r.pop("_update_index", None)
+                r["src_ip_ranges"] = [ip for ip in r.get("src_ip_ranges", []) if ip]
+                r["dest_ip_ranges"] = [ip for ip in r.get("dest_ip_ranges", []) if ip]
+                r["ports"] = [p for p in r.get("ports", []) if p]
+                cleaned.append(r)
+            tmp_file = file + ".tmp"
+            with open(tmp_file, "w") as of:
+                json.dump({"auto_firewall_rules": cleaned}, of, indent=2)
+                of.write("\n")
+            os.replace(tmp_file, file)
+            changed_files.add(file)
 
-    # If validation errors, report and exit
+    # write summary file if no errors occurred
+    if not errors:
+        with open("rule_update_summary.txt", "w") as f:
+            for line in summaries:
+                f.write(line + "\n")
+
+        # After writing all the rules out, recompute boundaries on any changed
+        # files.  We call the existing boundary_mapper script on each file
+        # individually so that src_vpc/dest_vpc fields are adjusted when IP
+        # ranges cross boundaries.  If the boundary mapper script is not
+        # available this step will no-op gracefully.
+        if changed_files:
+            try:
+                import subprocess
+                # Use a boundary map file if it exists; otherwise default to
+                # boundary_map.json in the repository root.
+                map_file = "boundary_map.json"
+                for fp in changed_files:
+                    # Only run for files that still exist (original files may have
+                    # been removed).  Provide the relative JSON path.
+                    if os.path.exists(fp):
+                        # Attempt to call boundary mapper; ignore errors
+                        # Suppress stdout/stderr from boundary mapper to avoid noise during updates
+                        subprocess.run([
+                            sys.executable,
+                            os.path.join(".github", "scripts", "boundary_mapper.py"),
+                            "--map-file", map_file,
+                            "--json-file", fp,
+                        ], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                # If subprocess or mapper is unavailable, silently skip boundary remap.
+                pass
+    # output validation errors if any
     if errors:
         print("VALIDATION_ERRORS_START")
         for e in errors:
             print(e)
         print("VALIDATION_ERRORS_END")
         sys.exit(1)
-
-    # Apply modifications: rewrite updated rules in place.  For each file we
-    # combine the remaining (untouched) rules with the updated rules and
-    # write the combined list back to the same file.  Empty files are left
-    # untouched unless all rules were updated, in which case the file will be
-    # removed.  We track all changed files so we can run boundary mapping.
-    changed_files: set = set()
-    for file, (remaining_rules, updated_rules) in files_to_update.items():
-        # Build a set of names of rules being updated in this file
-        updated_names = {req["rule_name"] for req in update_reqs}
-        # Combine remaining rules (excluding ones slated for update) with the updated rules
-        combined_rules = []
-        # Add remaining rules that are not being updated
-        for r in remaining_rules:
-            if r.get("name") not in updated_names:
-                new_r = r.copy()
-                new_r.pop("_update_index", None)
-                new_r["src_ip_ranges"] = [ip for ip in new_r.get("src_ip_ranges", []) if ip]
-                new_r["dest_ip_ranges"] = [ip for ip in new_r.get("dest_ip_ranges", []) if ip]
-                new_r["ports"] = [p for p in new_r.get("ports", []) if p]
-                combined_rules.append(new_r)
-        # Add the updated rules
-        for r in updated_rules:
-            new_r = r.copy()
-            new_r.pop("_update_index", None)
-            new_r["src_ip_ranges"] = [ip for ip in new_r.get("src_ip_ranges", []) if ip]
-            new_r["dest_ip_ranges"] = [ip for ip in new_r.get("dest_ip_ranges", []) if ip]
-            new_r["ports"] = [p for p in new_r.get("ports", []) if p]
-            combined_rules.append(new_r)
-        # Write combined list back to the file
-        if combined_rules:
-            tmp_path = file + ".tmp"
-            with open(tmp_path, "w") as f:
-                json.dump({"auto_firewall_rules": combined_rules}, f, indent=2)
-                f.write("\n")
-            os.replace(tmp_path, file)
-            changed_files.add(file)
-        else:
-            # If no rules remain, remove the file
-            if os.path.exists(file):
-                os.remove(file)
-                changed_files.add(file)
-
-    # Write summary file
-    with open("rule_update_summary.txt", "w") as f:
-        for line in summaries:
-            f.write(line + "\n")
-
-    # Run boundary mapper on changed files
-    if changed_files:
-        try:
-            import subprocess
-            map_file = "boundary_map.json"
-            for fp in changed_files:
-                if os.path.exists(fp):
-                    subprocess.run([
-                        sys.executable,
-                        os.path.join(".github", "scripts", "boundary_mapper.py"),
-                        "--map-file", map_file,
-                        "--json-file", fp,
-                    ], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception:
-            pass
 
 
 if __name__ == "__main__":
