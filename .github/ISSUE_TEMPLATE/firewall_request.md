@@ -18,11 +18,11 @@ Guidance for requesters:
 ### CARID:
 
 #### Rule 1
-🔹 New Source IP:
-🔹 New Destination IP:
-🔹 New Port(s):
-🔹 New Protocol:
-🔹 New Direction:
-🔹 New Business Justification:
+New Source IP: 
+New Destination IP: 
+New Port(s): 
+New Protocol: 
+New Direction: 
+New Business Justification: 
 
 <!-- Copy the Rule section above and increment the number for additional rules -->
