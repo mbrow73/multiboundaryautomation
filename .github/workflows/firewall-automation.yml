@@ -93,7 +93,7 @@ jobs:
         run: |
           python3 .github/scripts/boundary_mapper.py \
             --map-file boundary_map.json \
-            --json-file firewall-requests/${{ steps.parse.outputs.REQ }}.auto_tfvars.json \
+            --json-file firewall-requests/${{ steps.parse.outputs.REQ }}.auto.tfvars.json \
             --default-boundary dmz
 
       - name: ⏫ Create or Update Pull Request for NetSec
