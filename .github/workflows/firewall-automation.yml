@@ -1,121 +1,56 @@
-name: 🔒 Process Firewall Requests (Boundary‑Aware)
+name: Firewall Automation
 
 on:
   issues:
-    types: [opened, edited, reopened]
-
-permissions:
-  contents: write
-  issues: write
-  pull-requests: write
+    types:
+      - labeled
 
 jobs:
-  process:
+  add-firewall-rule:
     if: contains(github.event.issue.labels.*.name, 'firewall-request')
     runs-on: ubuntu-latest
     steps:
-      - name: ⬇️ Checkout repo
-        uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v3
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # Fetch full history to allow committing back
           fetch-depth: 0
-
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v3
         with:
           python-version: '3.11'
-
-      # Guard against duplicate request IDs before doing any processing
-      - name: 🛡️ Duplicate REQID guard
-        id: dup_guard
-        shell: bash
-        run: |
-          echo "${{ github.event.issue.body }}" > issue.txt
-          REQID=$(grep -i "Request ID" issue.txt | head -1 | cut -d: -f2- | xargs)
-          echo "REQID=$REQID" >> $GITHUB_OUTPUT
-          if [ -f firewall-requests/${REQID}.auto.tfvars.json ]; then
-            gh issue comment ${{ github.event.issue.number }} --body $'### ❌ Duplicate Request ID\n\nThe Request ID **'"${REQID}"'** has already been used for a firewall request. Please choose a new Request ID or submit an update request instead.'
-            gh issue close ${{ github.event.issue.number }}
-            exit 1
-          fi
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      # Validate format and field values using the existing validator
-      - name: 🔎 Validate Issue Format and Data
+      - name: Validate firewall request
         id: validate
-        shell: bash
+        continue-on-error: true
         run: |
-          echo "${{ github.event.issue.body }}" > issue.txt
-          python3 .github/scripts/firewall_request_validator.py issue.txt > validation_output.txt || VALIDATION_FAILED=1
-          if [[ "$VALIDATION_FAILED" == "1" ]]; then
-            ERRORS=$(awk '/VALIDATION_ERRORS_START/,/VALIDATION_ERRORS_END/' validation_output.txt | sed '/VALIDATION_ERRORS_START\|VALIDATION_ERRORS_END/d')
-            gh issue comment ${{ github.event.issue.number }} --body $'### ❌ Firewall Request Validation Failed\n\n**Errors:**\n\n'"$(echo "$ERRORS" | sed 's/^/- /')"'\n\n_Your request was closed. Please correct the above and submit again._'
-            gh issue close ${{ github.event.issue.number }}
-            exit 1
-          fi
+          # Run the validator and capture output. On error the step outcome will be 'failure'.
+          python3 .github/scripts/firewall_request_validator.py "$GITHUB_EVENT_PATH" > validation_output.txt
+      - name: Post validation errors and close issue
+        if: steps.validate.outcome == 'failure'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      # Parse the issue and generate per‑boundary JSON along with a human‑readable summary
-      - name: 📝 Parse Issue, Generate Per‑Boundary JSON and Summary
-        id: parse_and_write
-        shell: bash
         run: |
-          set -e
-          ISSUE_BODY="$(printf '%s' "${{ github.event.issue.body }}" | tr -d '\r' | sed -e 's/[\x00-\x1F]//g')"
-          REQID=$(echo "$ISSUE_BODY" | grep -i "Request ID" | head -1 | cut -d: -f2- | xargs)
-          echo "REQID=$REQID" >> $GITHUB_OUTPUT
-          # Invoke the boundary parser; it writes firewall-requests/${REQID}.auto.tfvars.json and rules_summary.txt
-          python3 .github/scripts/boundary_parser.py "$ISSUE_BODY" || PARSE_FAILED=1
-          if [[ "$PARSE_FAILED" == "1" ]]; then
-            ERRORS=$(awk '/VALIDATION_ERRORS_START/,/VALIDATION_ERRORS_END/' rules_summary.txt | sed '/VALIDATION_ERRORS_START\|VALIDATION_ERRORS_END/d')
-            gh issue comment ${{ github.event.issue.number }} --body $'### ❌ Firewall Request Parsing Failed\n\n**Errors:**\n\n'"$(echo "$ERRORS" | sed 's/^/- /')"'\n\n_Your request was closed. Please correct the above and submit again._'
-            gh issue close ${{ github.event.issue.number }}
-            exit 1
-          fi
-          SUMMARY=$(cat rules_summary.txt)
-          echo "RULE_SUMMARY<<EOF" >> $GITHUB_OUTPUT
-          echo "$SUMMARY" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          # Extract errors between the markers printed by the validator
+          ERRORS=$(awk '/VALIDATION_ERRORS_START/,/VALIDATION_ERRORS_END/' validation_output.txt | sed '/VALIDATION_ERRORS_START\|VALIDATION_ERRORS_END/d')
+          # Post a comment summarizing the validation errors
+          gh issue comment ${{ github.event.issue.number }} --body $'### ❌ Firewall Request Validation Failed\n\n**Errors:**\n\n'"$(echo "$ERRORS" | sed 's/^/- /')"'\n\n_Your request was closed. Please correct the above and submit again._'
+          # Close the issue
+          gh issue close ${{ github.event.issue.number }}
+      - name: Parse firewall request into auto.tfvars
+        if: steps.validate.outcome == 'success'
+        run: python3 .github/scripts/boundary_parser.py "$GITHUB_EVENT_PATH"
+      - name: Commit generated firewall rules
+        if: steps.validate.outcome == 'success'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      # Create or update a pull request containing the generated firewall rules
-      - name: ⏫ Create or Update Pull Request for NetSec
-        id: cpr
-        uses: peter-evans/create-pull-request@v6
-        with:
-          commit-message: |
-            [Firewall Automation] Update rules for ${{ steps.parse_and_write.outputs.REQID }}
-          branch: firewall/${{ steps.parse_and_write.outputs.REQID }}-${{ github.event.issue.number }}
-          title: "Firewall request: ${{ steps.parse_and_write.outputs.REQID }} (Issue #${{ github.event.issue.number }})"
-          body: |
-            **Rule Flow Summary:**
-            ${{ steps.parse_and_write.outputs.RULE_SUMMARY }}
-
-            **Summary:**
-            - Source: ${{ github.event.issue.user.login }}
-            - Related Issue: #${{ github.event.issue.number }}
-
-            **Rules:**  
-            _See the file `firewall-requests/${{ steps.parse_and_write.outputs.REQID }}.auto.tfvars.json` for full details._
-
-            > **NetSec:** Please review and merge if approved.
-          add-paths: |
-            firewall-requests/${{ steps.parse_and_write.outputs.REQID }}.auto.tfvars.json
-          base: main
-
-      # Comment back on the original issue with a link to the PR
-      - name: 💬 Comment PR Link to Issue
-        if: steps.cpr.outputs.pull-request-url != ''
-        uses: actions/github-script@v6
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: `:robot: PR [#${{ steps.cpr.outputs.pull-request-number }}](${{ steps.cpr.outputs.pull-request-url }}) opened/updated for NetSec review.`
-            })
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Stage new or updated firewall request files
+          if [ -n "$(git status --porcelain firewall-requests)" ]; then
+            git add firewall-requests
+            git commit -m "chore: add firewall rules for ${{ github.event.issue.number }}"
+            git push origin HEAD:${{ github.ref }}
+          else
+            echo "No changes to commit"
+          fi
