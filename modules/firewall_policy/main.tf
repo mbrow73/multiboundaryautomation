@@ -13,7 +13,6 @@
  * `security_profile_group_id` input variable.
  */
 
-
 /*
  * Create one firewall policy per boundary.  The map keys of
  * `vpc_boundaries` should match the `src_vpc`/`dest_vpc` values used in
@@ -33,8 +32,8 @@ resource "google_compute_network_firewall_policy" "policies" {
  * `vpc_boundaries`.
  */
 resource "google_compute_network_firewall_policy_association" "attach" {
-  for_each         = var.vpc_boundaries
-  name             = each.key
+  for_each          = var.vpc_boundaries
+  name              = each.key
   attachment_target = each.value
   firewall_policy   = google_compute_network_firewall_policy.policies[each.key].id
 }
@@ -52,14 +51,10 @@ resource "google_compute_network_firewall_policy_association" "attach" {
  *     is generated.
  */
 locals {
-  # For each input rule, build one or two per‑policy entries to ensure both
-  # ingress and egress sides are represented.  The 'dest' entry uses the
-  # original direction relative to the destination policy; the 'src' entry
-  # (if the source policy differs) uses the opposite direction.
   expanded_rules = flatten([
     for r in var.inet_firewall_rules : [
       for entry in concat(
-        # always include the destination side
+        # Destination side: always use the original direction
         [
           {
             policy             = lower(r.dest_vpc) == "onprem" ? "intranet" : lower(r.dest_vpc)
@@ -67,36 +62,39 @@ locals {
             direction_override = r.direction
           }
         ],
-        # include the source side (opposite direction) only if the policies differ
+        # Source side: only when the policies differ
         (
-          (
-            lower(r.dest_vpc) == "onprem" ? "intranet" : lower(r.dest_vpc)
-          ) != (
-            lower(r.src_vpc) == "onprem" ? "intranet" : lower(r.src_vpc)
-          )
-        ) ? [
-          {
-            policy             = lower(r.src_vpc) == "onprem" ? "intranet" : lower(r.src_vpc)
-            suffix             = "src"
-            direction_override = (upper(r.direction) == "INGRESS" ? "EGRESS" : "INGRESS")
-          }
-        ] : []
+          (lower(r.dest_vpc) == "onprem" ? "intranet" : lower(r.dest_vpc))
+          != (lower(r.src_vpc) == "onprem" ? "intranet" : lower(r.src_vpc))
+        )
+        ? [
+            {
+              policy = lower(r.src_vpc) == "onprem" ? "intranet" : lower(r.src_vpc)
+              suffix = "src"
+              # If either boundary is onprem, keep the original direction
+              # Otherwise, invert to create an ingress leg
+              direction_override = (
+                lower(r.dest_vpc) == "onprem" || lower(r.src_vpc) == "onprem"
+              ) ? r.direction : (upper(r.direction) == "INGRESS" ? "EGRESS" : "INGRESS")
+            }
+          ]
+        : []
       ) : {
-        key               = "${r.name}-${entry.policy}-${entry.suffix}"
-        rule              = r
-        target_policy     = entry.policy
-        direction_override= entry.direction_override
+        key                = "${r.name}-${entry.policy}-${entry.suffix}"
+        rule               = r
+        target_policy      = entry.policy
+        direction_override = entry.direction_override
       }
     ]
   ])
 
-  # Convert list to map keyed by unique key for use in for_each
+  # Convert to a map for for_each
   expanded_rules_map = {
     for obj in local.expanded_rules : obj.key => merge(
       obj.rule,
       {
-        target_policy     = obj.target_policy,
-        direction_override= obj.direction_override
+        target_policy      = obj.target_policy,
+        direction_override = obj.direction_override
       }
     )
   }
@@ -107,24 +105,20 @@ locals {
  * selected based on the `target_policy` computed above.  The action
  * and security profile group are derived on‑the‑fly according to the
  * boundary logic: if the source and destination VPC differ (and it is
- * not the intranet→onprem case) then inspection is applied.
+ * not the intranet→onprem hub case) then inspection is applied.
  */
 resource "google_compute_network_firewall_policy_rule" "rule" {
   for_each        = local.expanded_rules_map
   firewall_policy = google_compute_network_firewall_policy.policies[each.value.target_policy].id
   description     = each.value.description
   priority        = each.value.priority
-  # Use the overridden direction computed during rule expansion.  This ensures
-  # that each boundary receives an appropriate ingress/egress rule.
   direction       = each.value.direction_override
 
-  # Derive action based on boundary logic (using original src_vpc/dest_vpc)
   action = (
     lower(each.value.src_vpc) != lower(each.value.dest_vpc) &&
     !(lower(each.value.src_vpc) == "intranet" && lower(each.value.dest_vpc) == "onprem")
   ) ? "apply_security_profile_group" : "allow"
 
-  # Conditionally set the security profile group
   security_profile_group = (
     lower(each.value.src_vpc) != lower(each.value.dest_vpc) &&
     !(lower(each.value.src_vpc) == "intranet" && lower(each.value.dest_vpc) == "onprem")
