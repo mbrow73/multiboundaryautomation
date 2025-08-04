@@ -39,18 +39,20 @@ jobs:
         shell: bash
         run: |
           mkdir -p firewall-requests
+          # Enable nullglob so the array is empty if no files match
+          shopt -s nullglob
+          files=(firewall-requests/*.auto.tfvars.json)
 
-          # If any *.auto.tfvars.json exists, compute the max; otherwise default to 999
-          if ls firewall-requests/*.auto.tfvars.json 1> /dev/null 2>&1; then
-            M=$(jq -s '[ .[].auto_firewall_rules[].priority ] | max' firewall-requests/*.auto_tfvars.json)
+          if (( ${#files[@]} )); then
+            # There are files, compute the max
+            M=$(jq -s '[ .[].auto_firewall_rules[].priority ] | max' "${files[@]}")
           else
+            # No files yet, default to 999
             M=999
           fi
 
-          # Export to GH Actions output
-          echo "MAX_PRIORITY<<EOF" >> $GITHUB_OUTPUT
-          echo "$M"                 >> $GITHUB_OUTPUT
-          echo "EOF"                >> $GITHUB_OUTPUT
+          # Export to GH Actions
+          echo "MAX_PRIORITY=$M" >> $GITHUB_OUTPUT
 
 
       - name: 📝 Parse & Write JSON
