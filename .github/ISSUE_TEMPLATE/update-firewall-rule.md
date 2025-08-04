@@ -10,6 +10,7 @@ labels: ["firewall-update-request"]
 **Current Rule Name**: <!-- e.g. AUTO-REQ1234567-123456789-TCP-443-1 -->
 **New Source IP(s) or CIDR(s)** (optional):  
 **New Destination IP(s) or CIDR(s)** (optional):  
+**New Direction** (optional):  
 **New Port(s)** (optional):  
 **New Protocol** (optional):  
 **New Business Justification** (optional):  
