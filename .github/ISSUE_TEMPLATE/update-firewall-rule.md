@@ -19,8 +19,6 @@ How to use:
 **Current Rule Name**: <!-- e.g. AUTO-REQ1234567-123456789-TCP-443-1 -->
 **New Source IP(s) or CIDR(s)** (optional):  
 **New Destination IP(s) or CIDR(s)** (optional):  
-**New Source VPC (boundary)** (optional):  
-**New Destination VPC (boundary)** (optional):  
 **New Port(s)** (optional):  
 **New Protocol** (optional):  
 **New Direction** (optional):  
