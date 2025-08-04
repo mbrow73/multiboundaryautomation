@@ -37,8 +37,24 @@ def load_boundary_map(root_dir: Path) -> dict:
         return json.load(f)
 
 def ip_to_boundary(ip_str: str, boundary_map: dict) -> str:
-    """Return the boundary name for the given IP using the CIDR map."""
-    ip_obj = ipaddress.ip_address(ip_str)
+    """Return the boundary name for the given IP or CIDR using the CIDR map.
+
+    Accepts strings representing single IPs (e.g. ``"203.0.113.5"``) or
+    CIDR blocks (e.g. ``"10.0.0.0/24"``). For CIDR blocks the function
+    considers the network address when determining the boundary. If no
+    boundary matches, ``"inet"`` is returned.
+    """
+    try:
+        # If the string has a slash, treat it as a network and use the
+        # network address. ``strict=False`` allows host bits to be set.
+        if "/" in ip_str:
+            network = ipaddress.ip_network(ip_str, strict=False)
+            ip_obj = network.network_address
+        else:
+            ip_obj = ipaddress.ip_address(ip_str)
+    except ValueError:
+        # Invalid IP/CIDR; default to inet boundary
+        return "inet"
     for boundary, cidrs in boundary_map.items():
         for cidr in cidrs:
             try:
