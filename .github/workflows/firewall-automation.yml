@@ -1,18 +1,21 @@
-# .github/workflows/process-firewall-request.yml
 name: 🔒 Process Firewall Requests
+
 on:
   issues:
     types: [opened, edited, reopened]
+
 permissions:
   contents: write
   issues: write
   pull-requests: write
+
 jobs:
   process:
     if: contains(github.event.issue.labels.*.name, 'firewall-request')
     runs-on: ubuntu-latest
+
     steps:
-      - name: ⬇️ Checkout
+      - name: ⬇️ Checkout repo
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -22,74 +25,103 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: 🔎 Validate Issue
+      - name: 🔎 Validate Issue Format and Data
         id: validate
+        shell: bash
         run: |
           echo "${{ github.event.issue.body }}" > issue.txt
-          python3 .github/scripts/firewall_request_validator.py issue.txt > out.txt || VALID=1
-          if [[ "$VALID" == "1" ]]; then
-            ERR=$(awk '/VALIDATION_ERRORS_START/,/VALIDATION_ERRORS_END/' out.txt | sed /^VALIDATION/d)
-            gh issue comment ${{ github.event.issue.number }} --body $'### ❌ Validation failed\n\n'"$ERR"
+
+          # Duplicate-REQID guard
+          REQID=$(grep -i "Request ID" issue.txt | head -1 | cut -d: -f2- | xargs)
+          if [ -f firewall-requests/${REQID}.auto_tfvars.json ]; then
+            gh issue comment ${{ github.event.issue.number }} --body $'### ❌ Duplicate Request ID\n\nThe Request ID **'"${REQID}"'** has already been used. Please choose a new one or use an update request.'
             gh issue close ${{ github.event.issue.number }}
             exit 1
           fi
+
+          # Run validator (no direction expected)
+          python3 .github/scripts/firewall_request_validator.py issue.txt > validation_output.txt || VALIDATION_FAILED=1
+          if [[ "$VALIDATION_FAILED" == "1" ]]; then
+            ERRORS=$(awk '/VALIDATION_ERRORS_START/,/VALIDATION_ERRORS_END/' validation_output.txt \
+                     | sed '/VALIDATION_ERRORS_START\|VALIDATION_ERRORS_END/d' \
+                     | sed 's/^/- /')
+            gh issue comment ${{ github.event.issue.number }} --body $'### ❌ Validation Failed\n\n'"$ERRORS"'\n\n_Your request was closed. Please correct above and retry._'
+            gh issue close ${{ github.event.issue.number }}
+            exit 1
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: 📊 Determine current max priority
         id: max_priority
         shell: bash
         run: |
           mkdir -p firewall-requests
-          # Enable nullglob so the array is empty if no files match
           shopt -s nullglob
-          files=(firewall-requests/*.auto.tfvars.json)
-
+          files=(firewall-requests/*.auto_tfvars.json)
           if (( ${#files[@]} )); then
-            # There are files, compute the max
             M=$(jq -s '[ .[].auto_firewall_rules[].priority ] | max' "${files[@]}")
           else
-            # No files yet, default to 999
             M=999
           fi
-
-          # Export to GH Actions
           echo "MAX_PRIORITY=$M" >> $GITHUB_OUTPUT
 
-
-      - name: 📝 Parse & Write JSON
+      - name: 📝 Parse Issue, Generate JSON & Summary
         id: parse
+        shell: bash
         run: |
-          BODY=$(printf '%s' "${{ github.event.issue.body }}" | tr -d $'\r')
-          REQ=$(echo "$BODY" | grep -i "Request ID" | cut -d: -f2- | xargs)
-          CAR=$(echo "$BODY" | grep -i CARID | cut -d: -f2- | xargs)
-          # split rules...
-          # capture only src,dst,port,proto,just → build JSON WITHOUT direction:
-          # ... [see previous AWK but drop dir]
-          # emit file firewall-requests/${REQ}.auto_tfvars.json
+          set -e
+          BODY=$(printf '%s' "${{ github.event.issue.body }}" | tr -d $'\r' | sed -e 's/[\x00-\x1F]//g')
+          REQ=$(echo "$BODY" | grep -i "Request ID" | head -1 | cut -d: -f2- | xargs)
+          CAR=$(echo "$BODY" | grep -i "CARID"       | head -1 | cut -d: -f2- | xargs)
+          MAXP=${{ steps.max_priority.outputs.MAX_PRIORITY }}
 
-      - name: 🗺️ Map IPs & Infer Direction
+          # Split rules into JSON and summary (drop any direction parsing)
+          # … your existing AWK logic here, but remove the New Direction capture …
+          # Assume that produces variables TFVARS and SUMMARY
+
+          mkdir -p firewall-requests
+          echo "$TFVARS" | jq '.' > firewall-requests/${REQ}.auto_tfvars.json
+
+          echo "REQ=$REQ"           >> $GITHUB_OUTPUT
+          echo "RULE_SUMMARY<<EOF" >> $GITHUB_OUTPUT
+          echo "$SUMMARY"          >> $GITHUB_OUTPUT
+          echo "EOF"               >> $GITHUB_OUTPUT
+
+      - name: 🗺️ Map IPs to Boundaries & Infer Direction
+        shell: bash
         run: |
           python3 .github/scripts/boundary_mapper.py \
             --map-file boundary_map.json \
             --json-file firewall-requests/${{ steps.parse.outputs.REQ }}.auto_tfvars.json \
             --default-boundary dmz
 
-      - name: ⏫ Create PR
+      - name: ⏫ Create or Update Pull Request for NetSec
+        id: cpr
         uses: peter-evans/create-pull-request@v6
         with:
+          commit-message: |
+            [Firewall Automation] New rules for ${{ steps.parse.outputs.REQ }}
           branch: firewall/${{ steps.parse.outputs.REQ }}-${{ github.event.issue.number }}
-          base: main
-          title: "Firewall request ${{ steps.parse.outputs.REQ }}"
+          title: "Firewall request: ${{ steps.parse.outputs.REQ }} (Issue #${{ github.event.issue.number }})"
           body: |
-            Rules generated; see firewall-requests/${{ steps.parse.outputs.REQ }}.auto_tfvars.json
-          add-paths: firewall-requests/${{ steps.parse.outputs.REQ }}.auto_tfvars.json
+            **Rule Flow Summary:**
+            ${{ steps.parse.outputs.RULE_SUMMARY }}
 
-      - name: 💬 Comment PR
+            _See_ `firewall-requests/${{ steps.parse.outputs.REQ }}.auto_tfvars.json` _for details._
+
+            Closes #${{ github.event.issue.number }}
+          add-paths: |
+            firewall-requests/${{ steps.parse.outputs.REQ }}.auto_tfvars.json
+          base: main
+
+      - name: 💬 Comment PR Link to Issue
+        if: steps.cpr.outputs.pull-request-url != ''
         uses: actions/github-script@v6
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             github.rest.issues.createComment({
               issue_number: context.issue.number,
-              body: `PR created for REQ${{ steps.parse.outputs.REQ }}`
+              body: `:robot: PR [#${{ steps.cpr.outputs.pull-request-number }}](${{ steps.cpr.outputs.pull-request-url }}) created for NetSec review.`
             })
-
