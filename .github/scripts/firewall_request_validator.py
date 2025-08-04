@@ -1,153 +1,232 @@
 #!/usr/bin/env python3
-"""
-firewall_request_validator.py
-
-This script validates firewall rule requests submitted via GitHub issues. It expects
-to be passed the path to the GitHub event payload (a JSON file provided by
-GitHub Actions in the GITHUB_EVENT_PATH environment variable). The payload must
-contain an "issue" object with a "body" field representing the Markdown issue
-content.
-
-The validator parses the issue body for one or more firewall rules, ensuring
-that each rule contains all required fields. Supported field labels include
-both the legacy format (e.g. "New Source IP(s) or CIDR(s)") and the
-simplified format (e.g. "New Source IP"). The validator is case-insensitive
-and tolerant of extra whitespace. If any required field is missing or blank,
-validation errors are printed between ``VALIDATION_ERRORS_START`` and
-``VALIDATION_ERRORS_END`` markers and the script exits with a non-zero status.
-Otherwise it prints a success message.
-
-Example usage (from within a GitHub Action):
-
-  python3 .github/scripts/firewall_request_validator.py "$GITHUB_EVENT_PATH"
-
-For local testing you can wrap your issue body in a minimal JSON structure:
-
-  {
-    "issue": { "body": "### Request ID (REQID): REQ123\n..." }
-  }
-
-and pass the resulting JSON file as the first argument to this script.
-"""
-
-import json
 import re
 import sys
-from pathlib import Path
+import ipaddress
+import glob
+import json
+from collections import defaultdict
 
-def load_event(event_path: str) -> dict:
-    """Load the GitHub event payload from a JSON file."""
+def validate_reqid(reqid):
+    return bool(re.fullmatch(r"REQ\d{7,8}", reqid))
+
+def validate_carid(carid):
+    return bool(re.fullmatch(r"\d{9}", carid))
+
+def validate_ip(ip):
+    # Fail if no CIDR mask present
+    if "/" not in ip:
+        return False
     try:
-        with open(event_path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as exc:
-        raise SystemExit(f"Failed to load event JSON from {event_path}: {exc}")
+        ipaddress.ip_network(ip, strict=False)
+        return True
+    except:
+        return False
 
-def normalise_key(key: str) -> str:
-    """Normalise field keys by stripping punctuation and suffixes.
+def validate_port(port):
+    if re.fullmatch(r"\d{1,5}", port):
+        n = int(port)
+        return 1 <= n <= 65535
+    if re.fullmatch(r"\d{1,5}-\d{1,5}", port):
+        a, b = map(int, port.split('-'))
+        return 1 <= a <= b <= 65535
+    return False
 
-    The validator accepts both legacy labels (e.g. "New Source IP(s) or CIDR(s)")
-    and simplified labels (e.g. "New Source IP"). This helper removes text
-    inside parentheses and normalises whitespace so that both map to a single
-    canonical key.
+def parse_rule_block(block):
+    """Extract fields from a rule block in the issue body.
+
+    The firewall request template now includes additional boundary fields (Source VPC/Destination VPC). To avoid
+    accidentally capturing the VPC names as IP/CIDR values, we look for specific labels. If the newer labels
+    are absent, we fall back to the older generic patterns for backward compatibility.
     """
-    # Remove anything in parentheses and strip whitespace
-    key = re.sub(r"\(.*?\)", "", key)
-    key = key.strip().rstrip(":").strip()
-    return key.lower()
+    def extract(label):
+        m = re.search(rf"{label}.*?:\s*(.+)", block, re.IGNORECASE)
+        return m.group(1).strip() if m else ""
 
-def parse_rules(body: str) -> list:
-    """Extract a list of rule dictionaries from the issue body.
+    # Prefer explicit IP/CIDR labels; fall back to generic "New Source"/"New Destination" for older issues
+    src_ip = extract("New Source IP") or extract("New Source")
+    dst_ip = extract("New Destination IP") or extract("New Destination")
+    src_vpc = extract("New Source VPC")
+    dst_vpc = extract("New Destination VPC")
+    ports = extract("New Port")
+    proto = extract("New Protocol")
+    direction = extract("New Direction")
+    just = extract("New Business Justification")
 
-    The body is expected to contain one or more sections starting with a
-    heading like ``#### Rule X`` followed by lines of the form ``Key: Value``.
-    Emoji bullets (e.g. ``🔹``) and dashes are ignored. Blank lines and
-    comments are skipped. Lines without a colon are ignored.
+    return {
+        "src": src_ip,
+        "dst": dst_ip,
+        "ports": ports,
+        "proto": proto,
+        "direction": direction,
+        "just": just,
+        "src_vpc": src_vpc,
+        "dst_vpc": dst_vpc,
+    }
 
-    Returns a list of dictionaries where each key is the canonicalised field
-    name (lowercase) and the value is the trimmed string after the colon.
+def parse_existing_rules():
+    """Load all existing auto firewall rules from JSON files into a list of summary dicts.
+
+    Each dict contains IP/CIDR, ports, protocol, direction and (if present) boundary names.  Boundaries are
+    optional in the original implementation; missing boundaries default to empty strings for comparison.
     """
     rules = []
-    current_rule = None
-    for line in body.splitlines():
-        stripped = line.strip()
-        # Start a new rule when encountering a rule header. Users may
-        # include markdown headings (e.g. "#### Rule 1") or plain text
-        # (e.g. "Rule 1"). The pattern below makes the leading ``#``
-        # characters optional to support both cases.
-        if re.match(r"^(?:#+\s*)?Rule\s+\d+", stripped, re.IGNORECASE):
-            if current_rule:
-                rules.append(current_rule)
-            current_rule = {}
+    for path in glob.glob("firewall-requests/*.auto.tfvars.json"):
+        try:
+            data = json.load(open(path))
+            for r in data.get("auto_firewall_rules", []):
+                rules.append({
+                    "src":       ",".join(r.get("src_ip_ranges", [])),
+                    "dst":       ",".join(r.get("dest_ip_ranges", [])),
+                    "ports":     ",".join(r.get("ports", [])),
+                    "proto":     r.get("protocol"),
+                    "direction": r.get("direction"),
+                    "src_vpc":   r.get("src_vpc", ""),
+                    "dst_vpc":   r.get("dest_vpc", ""),
+                })
+        except Exception:
             continue
-        # Skip comments and empty lines
-        if not stripped or stripped.startswith("<!--"):
-            continue
-        # Remove leading emojis or bullets
-        stripped = re.sub(r"^[\W_]+", "", stripped)
-        if ":" not in stripped:
-            continue
-        raw_key, raw_value = stripped.split(":", 1)
-        # Skip top-level metadata like Request ID and CARID. They are
-        # parsed separately and should not be treated as rule fields.
-        if re.match(r"(?i)\s*(request id|carid)\b", raw_key):
-            continue
-        key = normalise_key(raw_key)
-        value = raw_value.strip()
-        # Only start collecting a rule after encountering a "New ..." field
-        if current_rule is None:
-            # Do not implicitly start a rule for unrelated keys
-            if not key.startswith("new "):
-                continue
-            current_rule = {}
-        current_rule[key] = value
-    if current_rule:
-        rules.append(current_rule)
     return rules
 
-def validate_rules(rules: list) -> list:
-    """Return a list of error messages if required fields are missing."""
-    # Required fields in canonical form
-    # Define the canonical names of the required fields. The ``normalise_key``
-    # helper removes text inside parentheses (e.g. "(s)") and strips trailing
-    # colons, so the required keys should not include parentheses here. This
-    # allows both "New Port" and "New Port(s)" to satisfy the requirement.
-    required_fields = [
-        "new source ip",
-        "new destination ip",
-        "new port",
-        "new protocol",
-        "new direction",
-        "new business justification",
-    ]
-    errors = []
-    for idx, rule in enumerate(rules, start=1):
-        for field in required_fields:
-            if field not in rule or not rule[field]:
-                errors.append(f"Rule {idx}: Missing {field.title()}")
-    return errors
+def rule_exact_match(rule, rulelist):
+    """Check if a rule exactly matches an existing rule.
 
-def main(event_path: str) -> None:
-    event = load_event(event_path)
-    try:
-        body = event["issue"]["body"]
-    except KeyError:
-        raise SystemExit("GitHub event JSON does not contain issue.body")
-    rules = parse_rules(body)
-    errors = validate_rules(rules)
+    Two rules are considered the same only if their IP ranges, ports, protocol, direction and boundaries all match.
+    Boundaries are optional (empty string) and only compared when both rules specify them.
+    """
+    for r in rulelist:
+        if (
+            rule["src"] == r["src"]
+            and rule["dst"] == r["dst"]
+            and rule["ports"] == r["ports"]
+            and rule["proto"] == r["proto"]
+            and rule["direction"] == r["direction"]
+        ):
+            # if either rule has boundary names, require exact match as well
+            if (rule.get("src_vpc") or r.get("src_vpc")):
+                if rule.get("src_vpc", "") != r.get("src_vpc", ""):
+                    continue
+            if (rule.get("dst_vpc") or r.get("dst_vpc")):
+                if rule.get("dst_vpc", "") != r.get("dst_vpc", ""):
+                    continue
+            return True
+    return False
+
+def rule_is_redundant(rule, rulelist):
+    def subset(child, parent):
+        try:
+            return ipaddress.ip_network(child, strict=False).subnet_of(
+                   ipaddress.ip_network(parent, strict=False))
+        except:
+            return False
+
+    for r in rulelist:
+        # Direction and protocol must match
+        if rule["direction"] != r["direction"]:
+            continue
+        if rule["proto"] != r["proto"]:
+            continue
+        # If either rule specifies boundaries, only compare redundancy within the same boundaries
+        if rule.get("src_vpc") or r.get("src_vpc"):
+            if rule.get("src_vpc", "") != r.get("src_vpc", ""):
+                continue
+        if rule.get("dst_vpc") or r.get("dst_vpc"):
+            if rule.get("dst_vpc", "") != r.get("dst_vpc", ""):
+                continue
+
+        srcs_child  = [c.strip() for c in rule["src"].split(",")]
+        srcs_parent = [p.strip() for p in r["src"].split(",")]
+        dsts_child  = [c.strip() for c in rule["dst"].split(",")]
+        dsts_parent = [p.strip() for p in r["dst"].split(",")]
+        ports_child = set(int(p) for p in rule["ports"].split(","))
+        ports_parent = set(int(p) for p in r["ports"].split(","))
+
+        if (
+            all(any(subset(c, p) for p in srcs_parent) for c in srcs_child)
+            and all(any(subset(c, p) for p in dsts_parent) for c in dsts_child)
+            and ports_child.issubset(ports_parent)
+        ):
+            return True
+    return False
+
+def print_errors(errs):
+    print("VALIDATION_ERRORS_START")
+    for e in errs:
+        print(e)
+    print("VALIDATION_ERRORS_END")
+    sys.exit(1)
+
+def main():
+    issue = open(sys.argv[1]).read()
+    errors = []
+
+    # REQID
+    m = re.search(r"Request ID.*?:\s*([A-Z0-9]+)", issue, re.IGNORECASE)
+    reqid = m.group(1).strip() if m else None
+    if not reqid or not validate_reqid(reqid):
+        errors.append(f"❌ REQID must be 'REQ' followed by 7–8 digits. Found: '{reqid}'")
+
+    # CARID
+    m = re.search(r"CARID.*?:\s*(\d+)", issue, re.IGNORECASE)
+    carid = m.group(1).strip() if m else None
+    if not carid or not validate_carid(carid):
+        errors.append(f"❌ CARID must be exactly 9 digits. Found: '{carid}'")
+
+    # Rule blocks
+    blocks = re.split(r"#### Rule", issue, flags=re.IGNORECASE)[1:]
+    seen = set()
+    for idx, blk in enumerate(blocks, 1):
+        r = parse_rule_block(blk)
+        src, dst, ports, proto, direction, just = (
+            r["src"], r["dst"], r["ports"], r["proto"], r["direction"], r["just"]
+        )
+
+        # all fields present?
+        if not all([src, dst, ports, proto, direction, just]):
+            errors.append(f"❌ Rule {idx}: All fields must be present.")
+            continue
+
+        # Protocol
+        if proto != proto.lower() or proto not in {"tcp","udp","icmp","sctp"}:
+            errors.append(f"❌ Rule {idx}: Protocol must be one of tcp, udp, icmp, sctp (lowercase).")
+
+        # IP/CIDR checks (require slash mask)
+        for label, val in [("source", src), ("destination", dst)]:
+            for ip in val.split(","):
+                ip = ip.strip()
+                if "/" not in ip:
+                    errors.append(f"❌ Rule {idx}: {label.capitalize()} '{ip}' must include a CIDR mask (e.g. /32).")
+                    continue
+                try:
+                    net = ipaddress.ip_network(ip, strict=False)
+                except:
+                    errors.append(f"❌ Rule {idx}: Invalid {label} IP/CIDR '{ip}'.")
+                    continue
+
+        # Port checks
+        for p in ports.split(","):
+            p = p.strip()
+            if not validate_port(p):
+                errors.append(f"❌ Rule {idx}: Invalid port or range: '{p}'.")
+
+        # Duplicate within request
+        key = (src, dst, ports, proto, direction)
+        if key in seen:
+            errors.append(f"❌ Rule {idx}: Duplicate rule in request.")
+        seen.add(key)
+
+    # Global duplicates/redundancy
+    existing = parse_existing_rules()
+    for idx, blk in enumerate(blocks, 1):
+        r = parse_rule_block(blk)
+        if not all([r["src"], r["dst"], r["ports"], r["proto"], r["direction"]]):
+            continue
+        if rule_exact_match(r, existing):
+            errors.append(f"❌ Rule {idx}: Exact duplicate of existing rule.")
+        elif rule_is_redundant(r, existing):
+            errors.append(f"❌ Rule {idx}: Redundant—already covered by an existing broader rule.")
+
     if errors:
-        print("VALIDATION_ERRORS_START")
-        for err in errors:
-            print(err)
-        print("VALIDATION_ERRORS_END")
-        sys.exit(1)
-    print("Validation successful")
+        print_errors(errors)
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print(
-            "Usage: firewall_request_validator.py <path_to_event_json>",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-    main(sys.argv[1])
+    main()

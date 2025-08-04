@@ -1,56 +1,51 @@
-#!/usr/bin/env python3
-"""
-Post‑merge priority normalizer for firewall rules.
-
-After multiple firewall rule changes are merged into the main branch the
-priority values assigned at creation time may become sparse or disordered.
-This utility scans all `*.auto.tfvars.json` files in the `firewall-requests`
-directory, collects every rule, sorts them by their existing priority and
-reassigns a fresh, evenly spaced priority starting at 1000.  The rules are
-written back to their original files with updated priority values.  Rule
-names are intentionally left unchanged; only the `priority` field is
-modified.
-"""
-
-import json
 import glob
-import os
+import json
 
-def main() -> None:
-    # Gather all auto rule files
-    files = glob.glob("firewall-requests/*.auto.tfvars.json")
-    if not files:
-        print("No auto.tfvars.json files found. Nothing to normalize.")
-        return
+BASE_PRIORITY = 1000
+PRIORITY_STEP = 1
 
-    # Load all rules with their file references
-    all_rules = []  # list of (file_path, rule)
-    for path in files:
-        try:
-            data = json.load(open(path))
-        except Exception:
-            continue
-        for rule in data.get("auto_firewall_rules", []):
-            all_rules.append((path, rule))
+# Collect all rules, keep their file and original index
+rules = []
+for path in sorted(glob.glob("firewall-requests/*.auto.tfvars.json")):
+    with open(path) as f:
+        data = json.load(f)
+        for idx, rule in enumerate(data.get("auto_firewall_rules", [])):
+            rules.append({
+                "rule": rule,
+                "file": path,
+                "idx": idx
+            })
 
-    # Sort rules by their existing priority (ascending)
-    all_rules.sort(key=lambda x: x[1].get("priority", 0))
+# Find duplicate priorities
+priority_to_rules = {}
+for i, entry in enumerate(rules):
+    prio = entry["rule"].get("priority")
+    if prio in priority_to_rules:
+        priority_to_rules[prio].append(i)
+    else:
+        priority_to_rules[prio] = [i]
 
-    # Assign new priorities starting at 1000 with increments of 10
-    new_priority_base = 1000
-    for idx, (path, rule) in enumerate(all_rules):
-        rule["priority"] = new_priority_base + idx * 10
+# If all priorities are unique, exit without rewriting files
+has_dupes = any(len(idxs) > 1 for idxs in priority_to_rules.values())
+if not has_dupes:
+    print("No duplicate priorities detected. No normalization needed.")
+    exit(0)
 
-    # Group rules back into their respective files and write them out
-    grouped = {}
-    for path, rule in all_rules:
-        grouped.setdefault(path, []).append(rule)
+# If there are duplicates, reassign unique, gapless priorities across all rules (preserving order)
+print("Duplicate priorities found! Normalizing...")
+for i, entry in enumerate(rules):
+    entry["rule"]["priority"] = BASE_PRIORITY + i * PRIORITY_STEP
 
-    for path, rules in grouped.items():
+# Write back updated rules to their respective files (preserving file and original order)
+file_map = {}
+for entry in rules:
+    file_map.setdefault(entry["file"], []).append(entry["rule"])
+
+for path, new_rules in file_map.items():
+    with open(path, "r") as f:
+        orig_rules = json.load(f).get("auto_firewall_rules", [])
+    if orig_rules != new_rules:
         with open(path, "w") as f:
-            json.dump({"auto_firewall_rules": rules}, f, indent=2)
+            json.dump({"auto_firewall_rules": new_rules}, f, indent=2)
+        print(f"Updated: {path}")
 
-    print(f"Normalized {len(all_rules)} firewall rule priorities across {len(grouped)} files.")
-
-if __name__ == "__main__":
-    main()

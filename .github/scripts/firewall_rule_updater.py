@@ -1,19 +1,4 @@
 #!/usr/bin/env python3
-"""
-Update existing auto‑generated firewall rules when users submit an update request.
-
-This script largely preserves the behaviour of the original updater but adds
-support for recomputing network boundaries (src_boundary and dest_boundary)
-whenever source or destination IPs change.  The boundary mapping is read from
-`boundary_map.json` and defaults to the logical boundaries defined there.  If
-the mapping file cannot be loaded then all rules default to the "inet"
-boundary.
-
-Whenever a rule crosses boundaries the action is automatically set to
-"apply_security_profile_group"; intra‑boundary rules default to "allow"
-unless the action is explicitly provided in the rule definition.
-"""
-
 import re
 import sys
 import os
@@ -28,42 +13,6 @@ ALLOWED_PUBLIC_RANGES = [
     ipaddress.ip_network("199.36.153.4/30"),  # restricted googleapis
 ]
 
-# Attempt to load the boundary map so that updated rules can be reclassified.  A
-# missing or invalid file is tolerated and will result in all rules being
-# classified as belonging to the "inet" boundary.
-try:
-    BOUNDARY_MAP = json.load(open(os.environ.get("BOUNDARY_MAP", "boundary_map.json")))
-except Exception:
-    BOUNDARY_MAP = {}
-
-def ip_to_boundary(ip: str) -> str:
-    """Return the boundary for a given IP using the loaded boundary map."""
-    try:
-        net = ipaddress.ip_network(ip, strict=False)
-    except Exception:
-        return "inet"
-    for boundary, cidrs in BOUNDARY_MAP.items():
-        for cidr in cidrs:
-            try:
-                if net.subnet_of(ipaddress.ip_network(cidr, strict=False)):
-                    return boundary
-            except Exception:
-                continue
-    return "inet"
-
-def recompute_boundaries(rule: dict) -> None:
-    """Populate src_boundary, dest_boundary and action based on the rule's IP ranges."""
-    src_ip = rule.get("src_ip_ranges", ["0.0.0.0/0"])[0]
-    dest_ip = rule.get("dest_ip_ranges", ["0.0.0.0/0"])[0]
-    src_boundary = ip_to_boundary(src_ip)
-    dest_boundary = ip_to_boundary(dest_ip)
-    rule["src_boundary"] = src_boundary
-    rule["dest_boundary"] = dest_boundary
-    # Default to apply_security_profile_group on cross‑boundary; allow otherwise
-    default_action = "apply_security_profile_group" if src_boundary != dest_boundary else "allow"
-    rule["action"] = rule.get("action", default_action)
-
-
 def validate_reqid(reqid):
     return bool(re.fullmatch(r"REQ\d{7,8}", reqid))
 
@@ -77,7 +26,7 @@ def validate_ip(ip):
         else:
             ipaddress.ip_address(ip)
         return True
-    except Exception:
+    except:
         return False
 
 def validate_port(port):
@@ -309,8 +258,6 @@ def main():
                 rule_errors = validate_rule(updated_rule, idx=update["idx"])
                 if rule_errors:
                     errors.extend(rule_errors)
-                # Recompute src/dest boundaries and default action after updates
-                recompute_boundaries(updated_rule)
                 new_rules.append(updated_rule)
                 summaries.append(
                     make_update_summary(
@@ -322,9 +269,6 @@ def main():
                     )
                 )
             else:
-                # Unchanged rules still need boundaries recomputed in case the
-                # boundary map has evolved or to ensure fields exist
-                recompute_boundaries(rule)
                 new_rules.append(rule)
 
         if not errors:

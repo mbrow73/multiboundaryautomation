@@ -1,4 +1,4 @@
-name: 🛠️ Process Firewall Rule Updates
+name: 🔄 Process Firewall Rule Updates
 
 on:
   issues:
@@ -25,7 +25,6 @@ jobs:
           python-version: '3.11'
 
       - name: 🔎 Validate & Apply Rule Updates
-        id: update
         shell: bash
         run: |
           echo "${{ github.event.issue.body }}" > issue.txt

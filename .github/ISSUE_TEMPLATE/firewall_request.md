@@ -4,25 +4,25 @@ about: "Request new or updated GCP firewall rules"
 labels: ["firewall-request"]
 ---
 
-<!--
-Guidance for requesters:
-* Provide a unique Request ID (REQID) and CARID.
-* To submit multiple firewall rules in one issue, copy the “Rule X” section below and increment the number.
-* “New Source IP” and “New Destination IP” can be a single IP or CIDR (comma‑separate multiple entries if needed).
-* “New Port(s)” can list a single port or a comma‑separated list (e.g. 80,443).
-* “New Direction” must be either INGRESS or EGRESS.
-* Provide a clear business justification for each rule.
--->
-
-### Request ID (REQID):
-### CARID:
+### Request ID (REQID): REQ123123
+### CARID: 123123
 
 #### Rule 1
-New Source IP: 
-New Destination IP: 
-New Port(s): 
-New Protocol: 
-New Direction: 
-New Business Justification: 
+🔹 New Source IP(s) or CIDR(s): 203.0.113.55/32  
+🔹 New Destination IP(s) or CIDR(s): 10.1.2.22/32  
+🔹 New Source VPC (boundary): inet  
+🔹 New Destination VPC (boundary): inet  
+🔹 New Port(s): 443  
+🔹 New Protocol: tcp  
+🔹 New Direction: INGRESS  
+🔹 New Business Justification: Need to restrict to a smaller range
 
-<!-- Copy the Rule section above and increment the number for additional rules -->
+#### Rule 2
+🔹 New Source IP(s) or CIDR(s): 10.2.3.4/32  
+🔹 New Destination IP(s) or CIDR(s): 10.1.2.0/24  
+🔹 New Source VPC (boundary): inet  
+🔹 New Destination VPC (boundary): inet  
+🔹 New Port(s): 8443  
+🔹 New Protocol: tcp  
+🔹 New Direction: EGRESS  
+🔹 New Business Justification: Another justification

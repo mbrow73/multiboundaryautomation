@@ -1,33 +1,91 @@
-name: "Process firewall rule removal"
+name: 🗑️ Process Firewall Rule Removals
 
 on:
   issues:
-    types: [opened]
+    types: [opened, edited, reopened]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
 
 jobs:
-  remove-firewall-rule:
-    if: contains(github.event.issue.labels.*.name, 'firewall-removal')
+  remove:
+    if: contains(github.event.issue.labels.*.name, 'firewall-remove-request')
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      pull-requests: write
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
+      - name: ⬇️ Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.x'
+          python-version: '3.11'
 
-      - name: Remove firewall rule
+      - name: 🔎 Validate & Apply Rule Removals
+        shell: bash
         run: |
-          python3 .github/scripts/firewall_rule_remover.py "$GITHUB_EVENT_PATH"
+          echo "${{ github.event.issue.body }}" > issue.txt
+          python3 .github/scripts/firewall_rule_remover.py "$(cat issue.txt)" > validation_output.txt || VALIDATION_FAILED=1
+          if [[ "$VALIDATION_FAILED" == "1" ]]; then
+            ERRORS=$(awk '/VALIDATION_ERRORS_START/,/VALIDATION_ERRORS_END/' validation_output.txt | sed '/VALIDATION_ERRORS_START\|VALIDATION_ERRORS_END/d' | sed 's/^/- /')
+            {
+              echo "### ❌ Firewall Rule Removal Validation Failed"
+              echo
+              echo "**Errors:**"
+              echo
+              echo "$ERRORS"
+              echo
+              echo "_Your request was closed. Please correct the above and submit again._"
+            } > comment.txt
+            gh issue comment ${{ github.event.issue.number }} --body-file comment.txt
+            gh issue close ${{ github.event.issue.number }}
+            exit 1
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Create pull request
-        uses: peter-evans/create-pull-request@v5
+      - name: 📋 Prepare Rule Removal Summary for PR
+        id: summary
+        run: |
+          if [ -f rule_removal_summary.txt ]; then
+            echo "RULE_REMOVAL_SUMMARY<<EOF" >> $GITHUB_OUTPUT
+            cat rule_removal_summary.txt >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          else
+            echo "RULE_REMOVAL_SUMMARY=No rule removals found." >> $GITHUB_OUTPUT
+          fi
+
+      - name: ⏫ Create or Update Pull Request for NetSec
+        id: cpr
+        uses: peter-evans/create-pull-request@v6
         with:
-          commit-message: "chore: remove firewall rule"
-          title: "Firewall rule removal"
-          body: "This pull request removes the requested firewall rule."
-          branch: "firewall-removal-${{ github.event.issue.number }}"
+          commit-message: |
+            [Firewall Automation] Remove firewall rule(s) for #${{ github.event.issue.number }}
+          branch: firewall/remove-${{ github.event.issue.number }}
+          title: "Firewall rule removal request (Issue #${{ github.event.issue.number }})"
+          body: |
+            **Rule Removals:**
+            ${{ steps.summary.outputs.RULE_REMOVAL_SUMMARY }}
+
+            _See the updated file(s) in `firewall-requests/` for details._
+
+            Related Issue: #${{ github.event.issue.number }}
+          add-paths: |
+            firewall-requests/*.auto.tfvars.json
+          base: main
+
+      - name: 💬 Comment PR Link to Issue
+        if: steps.cpr.outputs.pull-request-url != ''
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `:robot: PR [#${{ steps.cpr.outputs.pull-request-number }}](${{ steps.cpr.outputs.pull-request-url }}) opened/updated for NetSec review.`
+            })

@@ -1,37 +1,37 @@
-/*
- * Input variables for the simple firewall policy module.  These
- * definitions follow the original inetconfig module.  See the
- * documentation for descriptions of each field.
- */
-
 variable "project_id" {
-  description = "GCP project ID"
-  type        = string
-}
-
-variable "vpc_id" {
-  description = "Identifier of the VPC network to attach the policy to"
+  description = "GCP project ID for the firewall policies"
   type        = string
 }
 
 variable "policy_name" {
-  description = "Name of the network firewall policy"
+  description = "Base name for the firewall policies; each boundary name will be appended"
   type        = string
 }
 
-variable "rules" {
-  description = "List of firewall rule objects"
+variable "security_profile_group_id" {
+  description = "ID of the security profile group to apply for inspected rules"
+  type        = string
+}
+
+variable "vpc_boundaries" {
+  description = "Map of boundary name to VPC network self‑link.  Keys must match src_vpc/dest_vpc fields in rules."
+  type        = map(string)
+}
+
+variable "inet_firewall_rules" {
+  description = "List of firewall rules including VPC boundaries.  Each rule must specify the source and destination VPC names which correspond to the keys in vpc_boundaries."
   type = list(object({
     name            = string
     description     = string
     priority        = number
     direction       = string
-    action          = string
+    src_vpc         = string
+    dest_vpc        = string
     src_ip_ranges   = list(string)
     dest_ip_ranges  = list(string)
-    protocol        = string
     ports           = list(string)
+    protocol        = string
     enable_logging  = bool
+    tls_inspect     = optional(bool)
   }))
-  default = []
 }
