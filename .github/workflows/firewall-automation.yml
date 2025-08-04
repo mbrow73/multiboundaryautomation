@@ -1,66 +1,72 @@
-name: "🔒 Process Firewall Requests"
+name: Firewall Automation
+
 on:
   issues:
-    types: [opened, edited]
-
-permissions:
-  contents: write
-  issues: write
-  pull-requests: write
+    types:
+      - labeled
 
 jobs:
-  process:
+  add-firewall-rule:
     if: contains(github.event.issue.labels.*.name, 'firewall-request')
     runs-on: ubuntu-latest
-
     steps:
-      - name: "⬇️ Checkout repo"
-        uses: actions/checkout@v3
+      # …checkout, setup Python, validate, parse, etc…
 
-      - name: "🐍 Set up Python"
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.x'
-
-      - name: "📝 Parse Issue & Generate JSON"
-        id: parse_and_write
-        shell: bash
+      - name: Prepare commit and pull request
+        if: steps.validate.outcome == 'success'
         run: |
-          set -euo pipefail
-          BODY=$(printf '%s' "${{ github.event.issue.body }}" | tr -d '\r')
-          REQID=$(echo "$BODY" | grep -i 'Request ID' | cut -d: -f2 | xargs)
-          echo "REQID=$REQID" >> $GITHUB_OUTPUT
-          mkdir -p firewall-requests
-          # (Insert your extraction logic here to emit a JSON array of rules)
-          cat <<EOF > firewall-requests/${REQID}.auto.tfvars.json
-          {
-            "auto_firewall_rules": [
-              /* your generated rules go here */
-            ]
-          }
-          EOF
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: "🗺️ Map IPs to Boundaries"
-        shell: bash
-        run: |
-          JSON="firewall-requests/${{ steps.parse_and_write.outputs.REQID }}.auto.tfvars.json"
-          if [ ! -f "$JSON" ]; then
-            echo "❌ Error: $JSON not found" >&2
-            exit 1
+          # Detect changes under firewall-requests and bail out if none
+          if git diff --quiet --exit-code -- firewall-requests; then
+            echo "No changes detected; skipping PR creation"
+            exit 0
           fi
-          python3 .github/scripts/boundary_mapper.py \
-            --map-file boundary_map.json \
-            --json-file "$JSON" \
-            --default-boundary dmz
 
-      - name: "⏫ Create or Update Pull Request"
-        uses: peter-evans/create-pull-request@v6
+          # Stage changes
+          git add firewall-requests
+
+          # Derive the REQID from the generated file name
+          REQID=$(ls firewall-requests | grep -m1 -oE 'REQ[^.]*') || REQID="req"
+          echo "REQID=$REQID" >> "$GITHUB_ENV"
+
+          # Extract a simple summary of the first rule for the PR body
+          VAR_FILE="firewall-requests/${REQID}.auto.tfvars.json"
+          if command -v jq >/dev/null && [ -f "$VAR_FILE" ]; then
+            SRC=$(jq -r '.auto_firewall_rules[0].src_ip_ranges[0]' "$VAR_FILE")
+            DEST=$(jq -r '.auto_firewall_rules[0].dest_ip_ranges[0]' "$VAR_FILE")
+            PROTOCOL=$(jq -r '.auto_firewall_rules[0].protocol' "$VAR_FILE")
+            PORTS=$(jq -r '.auto_firewall_rules[0].ports' "$VAR_FILE")
+            DIR=$(jq -r '.auto_firewall_rules[0].direction' "$VAR_FILE")
+            RULE_SUMMARY="$SRC -> $DEST $PROTOCOL $PORTS ($DIR)"
+          else
+            RULE_SUMMARY="Firewall rules"
+          fi
+          echo "RULE_SUMMARY=$RULE_SUMMARY" >> "$GITHUB_ENV"
+
+      - name: Create Pull Request
+        if: steps.validate.outcome == 'success'
+        uses: peter-evans/create-pull-request@v5
         with:
-          commit-message: "[Firewall] ${{ steps.parse_and_write.outputs.REQID }}"
-          branch: firewall/${{ steps.parse_and_write.outputs.REQID }}
-          title: "Firewall Request ${{ steps.parse_and_write.outputs.REQID }}"
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore: add firewall rules for ${{ env.REQID }} (issue #${{ github.event.issue.number }})"
+          branch: "firewall/${{ env.REQID }}"
+          base: ${{ github.ref }}
+          title: "${{ env.REQID }} – Firewall Rule Request"
           body: |
-            :robot: Generated firewall rules for ${{ steps.parse_and_write.outputs.REQID }}.
-          add-paths: |
-            firewall-requests/${{ steps.parse_and_write.outputs.REQID }}.auto.tfvars.json
-          base: main
+            This pull request adds firewall rules for request **${{ env.REQID }}**, generated automatically from issue #${{ github.event.issue.number }}.
+
+            **Summary of changes**: `${{ env.RULE_SUMMARY }}`
+
+            The rules are defined in the generated Terraform vars file: `firewall-requests/${{ env.REQID }}.auto.tfvars.json`.
+
+            Please review the new firewall configuration and merge this PR if it looks correct.
+
+      - name: Comment on original issue
+        if: steps.validate.outcome == 'success'
+        run: |
+          gh issue comment ${{ github.event.issue.number }} \
+            --body "🚀 A pull request has been opened to add the firewall rules for **${{ env.REQID }}**: #${{ steps.create_pull_request.outputs.pull_request_number }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
