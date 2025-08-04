@@ -72,41 +72,43 @@ jobs:
         run: |
           set -e
 
-          # Strip control chars & pull out REQ/CAR
-          BODY="$(printf '%s' "${{ github.event.issue.body }}" | tr -d $'\r' | sed -e 's/[\x00-\x1F]//g')"
+          BODY="$(printf '%s' "${{ github.event.issue.body }}" \
+            | tr -d $'\r' \
+            | sed -e 's/[\x00-\x1F]//g')"
           REQ=$(echo "$BODY" | grep -i "Request ID"       | cut -d: -f2- | xargs)
           CAR=$(echo "$BODY" | grep -i "CARID"            | cut -d: -f2- | xargs)
           SRC=$(echo "$BODY" | grep -i "New Source IP"    | cut -d: -f2- | xargs)
           DST=$(echo "$BODY" | grep -i "New Destination IP"| cut -d: -f2- | xargs)
           PORT=$(echo "$BODY" | grep -i "New Port"        | cut -d: -f2- | xargs)
           PROTO=$(echo "$BODY" | grep -i "New Protocol"   | cut -d: -f2- | xargs)
-          JUST=$(echo "$BODY" | grep -i "New Business Justification" | cut -d: -f2- | xargs)
+          JUST=$(echo "$BODY" | grep -i "New Business Justification" \
+                  | cut -d: -f2- | xargs)
           MAXP=${{ steps.max_priority.outputs.MAX_PRIORITY }}
 
-          # Build the JSON into TFVARS
+          # Build valid JSON, letting Bash expand $PORT into the array literal
           TFVARS=$(
             jq -n \
-              --arg name "AUTO-${REQ}-${CAR}-${PROTO}-${PORT}-1" \
-              --arg desc "$JUST" \
-              --argjson priority $((MAXP+1)) \
-              --arg src "$SRC" \
-              --arg dst "$DST" \
-              --arg protocol "$PROTO" \
-              --argjson ports '[$PORT]' \
+              --arg name       "AUTO-${REQ}-${CAR}-${PROTO}-${PORT}-1" \
+              --arg desc       "$JUST" \
+              --argjson priority $((MAXP + 1)) \
+              --arg src        "$SRC" \
+              --arg dst        "$DST" \
+              --arg protocol   "$PROTO" \
+              --argjson ports  "[${PORT}]" \
               '{
-                 auto_firewall_rules: [
-                   {
-                     name:       $name,
-                     description:$name + " | " + $desc,
-                     src_ip_ranges:  [$src],
-                     dest_ip_ranges: [$dst],
-                     ports:          [$ports],
-                     protocol:       $protocol,
-                     priority:       $priority,
-                     enable_logging: true
-                   }
-                 ]
-               }'
+                auto_firewall_rules: [
+                  {
+                    name:           $name,
+                    description:    ($name + " | " + $desc),
+                    src_ip_ranges:  [$src],
+                    dest_ip_ranges: [$dst],
+                    ports:          $ports,
+                    protocol:       $protocol,
+                    priority:       $priority,
+                    enable_logging: true
+                  }
+                ]
+              }'
           )
 
           SUMMARY="- **Rule 1:** $SRC → $DST on $PROTO/$PORT _(Justification: $JUST)_"
@@ -114,14 +116,13 @@ jobs:
           mkdir -p firewall-requests
           echo "$TFVARS" > firewall-requests/${REQ}.auto_tfvars.json
 
-          # Export outputs for downstream steps
+          # Export outputs
           echo "REQ=$REQ"                    >> $GITHUB_OUTPUT
           echo "RULE_SUMMARY<<EOF"          >> $GITHUB_OUTPUT
           echo "$SUMMARY"                   >> $GITHUB_OUTPUT
           echo "EOF"                        >> $GITHUB_OUTPUT
         env:
           GITHUB_OUTPUT: $GITHUB_OUTPUT
-
 
       - name: 🗺️ Map IPs to Boundaries & Infer Direction
         shell: bash
