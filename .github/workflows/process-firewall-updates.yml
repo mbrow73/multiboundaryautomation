@@ -13,7 +13,6 @@ jobs:
   update:
     if: contains(github.event.issue.labels.*.name, 'firewall-update-request')
     runs-on: ubuntu-latest
-
     steps:
       - name: ⬇️ Checkout repo
         uses: actions/checkout@v4
@@ -31,25 +30,32 @@ jobs:
           echo "${{ github.event.issue.body }}" > issue.txt
           python3 .github/scripts/firewall_rule_updater.py "$(cat issue.txt)" > validation_output.txt || VALIDATION_FAILED=1
           if [[ "$VALIDATION_FAILED" == "1" ]]; then
-            ERRORS=$(awk '/VALIDATION_ERRORS_START/,/VALIDATION_ERRORS_END/' validation_output.txt \
-                     | sed '/VALIDATION_ERRORS_START\|VALIDATION_ERRORS_END/d' \
-                     | sed 's/^/- /')
-            gh issue comment ${{ github.event.issue.number }} --body $'### ❌ Firewall Rule Update Validation Failed\n\n**Errors:**\n\n'"$ERRORS"'\n\n_Your request was closed. Please correct the above and submit again._'
+            ERRORS=$(awk '/VALIDATION_ERRORS_START/,/VALIDATION_ERRORS_END/' validation_output.txt | sed '/VALIDATION_ERRORS_START\|VALIDATION_ERRORS_END/d' | sed 's/^/- /')
+            {
+              echo "### ❌ Firewall Rule Update Validation Failed"
+              echo
+              echo "**Errors:**"
+              echo
+              echo "$ERRORS"
+              echo
+              echo "_Your request was closed. Please correct the above and submit again._"
+            } > comment.txt
+            gh issue comment ${{ github.event.issue.number }} --body-file comment.txt
             gh issue close ${{ github.event.issue.number }}
             exit 1
           fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 📋 Summarize Rule Updates
+      - name: 📋 Prepare Rule Update Summary for PR
         id: summary
         run: |
           if [ -f rule_update_summary.txt ]; then
-            echo "SUMMARY<<EOF" >> $GITHUB_OUTPUT
+            echo "RULE_UPDATE_SUMMARY<<EOF" >> $GITHUB_OUTPUT
             cat rule_update_summary.txt >> $GITHUB_OUTPUT
             echo "EOF" >> $GITHUB_OUTPUT
           else
-            echo "SUMMARY=No rule updates found." >> $GITHUB_OUTPUT
+            echo "RULE_UPDATE_SUMMARY=No rule updates found." >> $GITHUB_OUTPUT
           fi
 
       - name: ⏫ Create or Update Pull Request for NetSec
@@ -58,17 +64,17 @@ jobs:
         with:
           commit-message: |
             [Firewall Automation] Update firewall rule(s) for #${{ github.event.issue.number }}
-          branch: update-${{ github.event.issue.number }}
+          branch: firewall/update-${{ github.event.issue.number }}
           title: "Firewall rule update request (Issue #${{ github.event.issue.number }})"
           body: |
             **Rule Updates:**
-            ${{ steps.summary.outputs.SUMMARY }}
+            ${{ steps.summary.outputs.RULE_UPDATE_SUMMARY }}
 
             _See the updated file(s) in `firewall-requests/` for details._
 
             Related Issue: #${{ github.event.issue.number }}
           add-paths: |
-            firewall-requests/*.auto_tfvars.json
+            firewall-requests/*.auto.tfvars.json
           base: main
 
       - name: 💬 Comment PR Link to Issue
