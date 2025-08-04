@@ -226,24 +226,20 @@ def main():
             continue
         file = file_map[rule_name]
         updates_by_file.setdefault(file, []).append(update)
-    # Collect updated rules across all files.  We'll write them out to a single
-    # new file named <new_reqid>.auto.tfvars.json after processing all inputs.
+    # Build proposed changes for each file and only apply them if there are no errors.
+    files_to_update: dict = {}
     updated_rules_global: list = []
+    changed_files = set()
 
-    # Apply updates per file
+    # Stage updates: collect remaining and updated rules without writing files
     for file, update_list in updates_by_file.items():
         with open(file) as f:
             file_data = json.load(f)
         orig_rules = file_data.get("auto_firewall_rules", [])
-        new_rules = []
-        # Split rules into two buckets:
-        # - remaining_rules stay in the original file
-        # - updated_rules move to the global updated list
         remaining_rules: list = []
-        file_updated_rules: list = []
+        updated_rules: list = []
         for idx, rule in enumerate(orig_rules, 1):
             if rule["name"] in {u["rule_name"] for u in update_list}:
-                # Build the update definition for this rule
                 update = next(u for u in update_list if u["rule_name"] == rule["name"])
                 new_fields = {}
                 if update["src_ip_ranges"]:
@@ -265,45 +261,15 @@ def main():
                 rule_errors = validate_rule(updated_rule, idx=update["idx"])
                 if rule_errors:
                     errors.extend(rule_errors)
-                file_updated_rules.append(updated_rule)
-                summaries.append(
-                    make_update_summary(
-                        update["idx"], rule["name"], rule, update, updated_rule
-                    )
-                )
+                updated_rules.append(updated_rule)
+                summaries.append(make_update_summary(update["idx"], rule["name"], rule, update, updated_rule))
             else:
                 remaining_rules.append(rule)
-        # If there are no validation errors, write back the updated rules
-        if not errors:
-            # Clean helper fields and remove empty values
-            def clean_rules(rules_list):
-                cleaned_list = []
-                for r in rules_list:
-                    r.pop("_update_index", None)
-                    r["src_ip_ranges"] = [ip for ip in r.get("src_ip_ranges", []) if ip]
-                    r["dest_ip_ranges"] = [ip for ip in r.get("dest_ip_ranges", []) if ip]
-                    r["ports"] = [p for p in r.get("ports", []) if p]
-                    cleaned_list.append(r)
-                return cleaned_list
-            # Accumulate updated rules from this file into the global list
-            updated_rules_global.extend(file_updated_rules)
-            # 2. update or remove the original file
-            if remaining_rules:
-                tmp_orig = file + ".tmp"
-                with open(tmp_orig, "w") as of:
-                    json.dump({"auto_firewall_rules": clean_rules(remaining_rules)}, of, indent=2)
-                    of.write("\n")
-                os.replace(tmp_orig, file)
-            else:
-                # no remaining rules; remove original file
-                if os.path.exists(file):
-                    os.remove(file)
-    # After processing all files, write the collected updated rules to a single
-    # <new_reqid>.auto.tfvars.json file if any updates were made.  We do this
-    # only when there are no validation errors.
-    if not errors and updated_rules_global:
-        # Clean helper fields and remove empty values
-        def clean_global(rules_list):
+        files_to_update[file] = (remaining_rules, updated_rules)
+
+    # If no validation errors were collected, apply the staged changes
+    if not errors:
+        def clean_rules(rules_list):
             cleaned_list = []
             for r in rules_list:
                 r.pop("_update_index", None)
@@ -312,19 +278,72 @@ def main():
                 r["ports"] = [p for p in r.get("ports", []) if p]
                 cleaned_list.append(r)
             return cleaned_list
-        new_filename = f"{new_reqid}.auto.tfvars.json"
-        new_path = os.path.join("firewall-requests", new_filename)
-        tmp_path = new_path + ".tmp"
-        with open(tmp_path, "w") as nf:
-            json.dump({"auto_firewall_rules": clean_global(updated_rules_global)}, nf, indent=2)
-            nf.write("\n")
-        os.replace(tmp_path, new_path)
+        # Apply modifications per file
+        for file, (remaining_rules, updated_rules) in files_to_update.items():
+            # accumulate updated rules for global file
+            updated_rules_global.extend(updated_rules)
+            if remaining_rules:
+                tmp_orig = file + ".tmp"
+                with open(tmp_orig, "w") as of:
+                    json.dump({"auto_firewall_rules": clean_rules(remaining_rules)}, of, indent=2)
+                    of.write("\n")
+                os.replace(tmp_orig, file)
+                changed_files.add(file)
+            else:
+                if os.path.exists(file):
+                    os.remove(file)
+        # Write out the new request file containing all updated rules
+        if updated_rules_global:
+            def clean_global(rules_list):
+                cleaned_list = []
+                for r in rules_list:
+                    r.pop("_update_index", None)
+                    r["src_ip_ranges"] = [ip for ip in r.get("src_ip_ranges", []) if ip]
+                    r["dest_ip_ranges"] = [ip for ip in r.get("dest_ip_ranges", []) if ip]
+                    r["ports"] = [p for p in r.get("ports", []) if p]
+                    cleaned_list.append(r)
+                return cleaned_list
+            new_filename = f"{new_reqid}.auto.tfvars.json"
+            new_path = os.path.join("firewall-requests", new_filename)
+            tmp_path = new_path + ".tmp"
+            with open(tmp_path, "w") as nf:
+                json.dump({"auto_firewall_rules": clean_global(updated_rules_global)}, nf, indent=2)
+                nf.write("\n")
+            os.replace(tmp_path, new_path)
+            changed_files.add(new_path)
 
     # write summary file if no errors occurred
     if not errors:
         with open("rule_update_summary.txt", "w") as f:
             for line in summaries:
                 f.write(line + "\n")
+
+        # After writing all the rules out, recompute boundaries on any changed
+        # files.  We call the existing boundary_mapper script on each file
+        # individually so that src_vpc/dest_vpc fields are adjusted when IP
+        # ranges cross boundaries.  If the boundary mapper script is not
+        # available this step will no-op gracefully.
+        if changed_files:
+            try:
+                import subprocess
+                # Use a boundary map file if it exists; otherwise default to
+                # boundary_map.json in the repository root.
+                map_file = "boundary_map.json"
+                for fp in changed_files:
+                    # Only run for files that still exist (original files may have
+                    # been removed).  Provide the relative JSON path.
+                    if os.path.exists(fp):
+                        # Attempt to call boundary mapper; ignore errors
+                        # Suppress stdout/stderr from boundary mapper to avoid noise during updates
+                        subprocess.run([
+                            sys.executable,
+                            os.path.join(".github", "scripts", "boundary_mapper.py"),
+                            "--map-file", map_file,
+                            "--json-file", fp,
+                        ], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                # If subprocess or mapper is unavailable, silently skip boundary remap.
+                pass
     # output validation errors if any
     if errors:
         print("VALIDATION_ERRORS_START")
