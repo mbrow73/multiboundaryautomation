@@ -98,10 +98,14 @@ def parse_rules(body: str) -> list:
 def validate_rules(rules: list) -> list:
     """Return a list of error messages if required fields are missing."""
     # Required fields in canonical form
+    # Define the canonical names of the required fields. The ``normalise_key``
+    # helper removes text inside parentheses (e.g. "(s)") and strips trailing
+    # colons, so the required keys should not include parentheses here. This
+    # allows both "New Port" and "New Port(s)" to satisfy the requirement.
     required_fields = [
         "new source ip",
         "new destination ip",
-        "new port(s)",
+        "new port",
         "new protocol",
         "new direction",
         "new business justification",
