@@ -26,11 +26,14 @@ ALLOWED_PUBLIC_RANGES = [
     ipaddress.ip_network("199.36.153.4/30"),  # restricted googleapis
 ]
 
+
 def validate_reqid(reqid):
     return bool(re.fullmatch(r"REQ\d{7,8}", reqid))
 
+
 def validate_carid(carid):
     return bool(re.fullmatch(r"\d{9}", carid))
+
 
 def validate_ip(ip):
     try:
@@ -42,6 +45,7 @@ def validate_ip(ip):
     except:
         return False
 
+
 def validate_port(port):
     if re.fullmatch(r"\d{1,5}", port):
         n = int(port)
@@ -51,8 +55,10 @@ def validate_port(port):
         return 1 <= a <= b <= 65535
     return False
 
+
 def validate_protocol(proto):
     return proto in {"tcp", "udp", "icmp", "sctp"}
+
 
 def load_all_rules():
     rule_map = {}
@@ -64,6 +70,7 @@ def load_all_rules():
                 rule_map[rule["name"]] = rule
                 file_map[rule["name"]] = path
     return rule_map, file_map
+
 
 def update_rule_fields(rule, updates, new_reqid, new_carid):
     idx = rule.get("_update_index", 1)
@@ -79,9 +86,10 @@ def update_rule_fields(rule, updates, new_reqid, new_carid):
         if v:
             rule[k] = (v.lower() if k in ["protocol", "direction"] else v)
 
-    desc_just = updates.get("description") or rule.get("description", "").split("|",1)[-1]
+    desc_just = updates.get("description") or rule.get("description", "").split("|", 1)[-1]
     rule["description"] = f"{new_name} | {desc_just.strip()}"
     return rule
+
 
 def validate_rule(rule, idx=1):
     errors = []
@@ -104,7 +112,7 @@ def validate_rule(rule, idx=1):
             if net.prefixlen < 24:
                 if not any(net.subnet_of(r) for r in ALLOWED_PUBLIC_RANGES):
                     errors.append(
-                        f"Rule {idx}: {label} '{ip}' is /{net.prefixlen}, must be /24 or smaller unless it’s a GCP health-check range."
+                        f"Rule {idx}: {label} '{ip}' is /{net.prefixlen}, must be /24 or smaller unless it’s a GCP health‑check range."
                     )
                 continue
             # Disallow other public ranges not in ALLOWED_PUBLIC_RANGES
@@ -134,9 +142,11 @@ def validate_rule(rule, idx=1):
         errors.append(f"Rule {idx}: CARID must be 9 digits. Found: '{carid}'.")
     return errors
 
+
 def parse_blocks(issue_body):
     blocks = re.split(r"(?:^|\n)#{0,6}\s*Rule\s*\d+\s*\n", issue_body, flags=re.IGNORECASE)
     return [b for b in blocks[1:] if b.strip()]
+
 
 def make_update_summary(idx, rule_name, old_rule, updates, new_rule):
     changes = []
@@ -162,6 +172,7 @@ def make_update_summary(idx, rule_name, old_rule, updates, new_rule):
         changes = ["(No fields updated, only name/desc changed)"]
     return f"- **Rule {idx}** (`{old_rule['name']}`): " + "; ".join(changes)
 
+
 def main():
     # Read issue body either from argument or stdin
     if len(sys.argv) == 2:
@@ -186,9 +197,11 @@ def main():
         if not rule_name:
             errors.append(f"Rule {idx}: 'Current Rule Name' is required.")
             continue
+
         def extract(label):
             m = re.search(rf"{label}.*?:\s*(.+)", block, re.IGNORECASE)
             return m.group(1).strip() if m else ""
+
         updates.append({
             "idx": idx,
             "rule_name": rule_name,
@@ -213,14 +226,24 @@ def main():
             continue
         file = file_map[rule_name]
         updates_by_file.setdefault(file, []).append(update)
+    # Collect updated rules across all files.  We'll write them out to a single
+    # new file named <new_reqid>.auto.tfvars.json after processing all inputs.
+    updated_rules_global: list = []
+
     # Apply updates per file
     for file, update_list in updates_by_file.items():
         with open(file) as f:
             file_data = json.load(f)
         orig_rules = file_data.get("auto_firewall_rules", [])
         new_rules = []
+        # Split rules into two buckets:
+        # - remaining_rules stay in the original file
+        # - updated_rules move to the global updated list
+        remaining_rules: list = []
+        file_updated_rules: list = []
         for idx, rule in enumerate(orig_rules, 1):
             if rule["name"] in {u["rule_name"] for u in update_list}:
+                # Build the update definition for this rule
                 update = next(u for u in update_list if u["rule_name"] == rule["name"])
                 new_fields = {}
                 if update["src_ip_ranges"]:
@@ -242,31 +265,62 @@ def main():
                 rule_errors = validate_rule(updated_rule, idx=update["idx"])
                 if rule_errors:
                     errors.extend(rule_errors)
-                new_rules.append(updated_rule)
+                file_updated_rules.append(updated_rule)
                 summaries.append(
                     make_update_summary(
                         update["idx"], rule["name"], rule, update, updated_rule
                     )
                 )
             else:
-                new_rules.append(rule)
+                remaining_rules.append(rule)
+        # If there are no validation errors, write back the updated rules
         if not errors:
-            dirpath = os.path.dirname(file)
-            new_name = f"{new_reqid}-{os.path.basename(file)}"
-            new_path = os.path.join(dirpath, new_name)
-            cleaned = []
-            for r in new_rules:
+            # Clean helper fields and remove empty values
+            def clean_rules(rules_list):
+                cleaned_list = []
+                for r in rules_list:
+                    r.pop("_update_index", None)
+                    r["src_ip_ranges"] = [ip for ip in r.get("src_ip_ranges", []) if ip]
+                    r["dest_ip_ranges"] = [ip for ip in r.get("dest_ip_ranges", []) if ip]
+                    r["ports"] = [p for p in r.get("ports", []) if p]
+                    cleaned_list.append(r)
+                return cleaned_list
+            # Accumulate updated rules from this file into the global list
+            updated_rules_global.extend(file_updated_rules)
+            # 2. update or remove the original file
+            if remaining_rules:
+                tmp_orig = file + ".tmp"
+                with open(tmp_orig, "w") as of:
+                    json.dump({"auto_firewall_rules": clean_rules(remaining_rules)}, of, indent=2)
+                    of.write("\n")
+                os.replace(tmp_orig, file)
+            else:
+                # no remaining rules; remove original file
+                if os.path.exists(file):
+                    os.remove(file)
+    # After processing all files, write the collected updated rules to a single
+    # <new_reqid>.auto.tfvars.json file if any updates were made.  We do this
+    # only when there are no validation errors.
+    if not errors and updated_rules_global:
+        # Clean helper fields and remove empty values
+        def clean_global(rules_list):
+            cleaned_list = []
+            for r in rules_list:
                 r.pop("_update_index", None)
                 r["src_ip_ranges"] = [ip for ip in r.get("src_ip_ranges", []) if ip]
                 r["dest_ip_ranges"] = [ip for ip in r.get("dest_ip_ranges", []) if ip]
                 r["ports"] = [p for p in r.get("ports", []) if p]
-                cleaned.append(r)
-            with open(new_path, "w") as f:
-                json.dump({"auto_firewall_rules": cleaned}, f, indent=2)
-                f.write("\n")
-            if os.path.abspath(new_path) != os.path.abspath(file):
-                os.remove(file)
-    # write summary
+                cleaned_list.append(r)
+            return cleaned_list
+        new_filename = f"{new_reqid}.auto.tfvars.json"
+        new_path = os.path.join("firewall-requests", new_filename)
+        tmp_path = new_path + ".tmp"
+        with open(tmp_path, "w") as nf:
+            json.dump({"auto_firewall_rules": clean_global(updated_rules_global)}, nf, indent=2)
+            nf.write("\n")
+        os.replace(tmp_path, new_path)
+
+    # write summary file if no errors occurred
     if not errors:
         with open("rule_update_summary.txt", "w") as f:
             for line in summaries:
@@ -278,6 +332,7 @@ def main():
             print(e)
         print("VALIDATION_ERRORS_END")
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()
