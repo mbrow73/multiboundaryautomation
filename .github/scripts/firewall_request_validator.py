@@ -88,10 +88,17 @@ def parse_rules(body: str) -> list:
         if ":" not in stripped:
             continue
         raw_key, raw_value = stripped.split(":", 1)
+        # Skip top-level metadata like Request ID and CARID. They are
+        # parsed separately and should not be treated as rule fields.
+        if re.match(r"(?i)\s*(request id|carid)\b", raw_key):
+            continue
         key = normalise_key(raw_key)
         value = raw_value.strip()
+        # Only start collecting a rule after encountering a "New ..." field
         if current_rule is None:
-            # If no rule heading was seen, start an implicit rule
+            # Do not implicitly start a rule for unrelated keys
+            if not key.startswith("new "):
+                continue
             current_rule = {}
         current_rule[key] = value
     if current_rule:
