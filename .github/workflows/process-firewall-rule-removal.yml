@@ -1,0 +1,33 @@
+name: "Process firewall rule removal"
+
+on:
+  issues:
+    types: [opened]
+
+jobs:
+  remove-firewall-rule:
+    if: contains(github.event.issue.labels.*.name, 'firewall-removal')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+
+      - name: Remove firewall rule
+        run: |
+          python3 .github/scripts/firewall_rule_remover.py "$GITHUB_EVENT_PATH"
+
+      - name: Create pull request
+        uses: peter-evans/create-pull-request@v5
+        with:
+          commit-message: "chore: remove firewall rule"
+          title: "Firewall rule removal"
+          body: "This pull request removes the requested firewall rule."
+          branch: "firewall-removal-${{ github.event.issue.number }}"
