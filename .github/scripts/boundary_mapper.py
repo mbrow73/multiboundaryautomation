@@ -11,21 +11,19 @@ boundary (VPC).
 
 The mapping logic works as follows:
 
-* The boundary map is a JSON object where each key is a boundary name and
-  each value is a list of CIDR blocks.  Comments beginning with `//` or
-  enclosed in `/* ... */` are ignored when parsing the file.
+* The boundary map is a JSON object where each key is a boundary name and each
+  value is a list of CIDR blocks.  Comments beginning with `//` or enclosed in
+  `/* ... */` are ignored when parsing the file.
 * For each CIDR in the map, the script builds an `ip_network` instance.  When
-  determining which boundary an IP or network belongs to, it chooses the
-  *most specific* matching CIDR (i.e. the one with the longest prefix length).
-* All IP ranges within a single rule must resolve to the *same* boundary;
+  determining which boundary an IP or network belongs to, it chooses the most
+  specific matching CIDR (i.e. the one with the longest prefix length).
+* All IP ranges within a single rule must resolve to the same boundary;
   otherwise the script will raise an error.  This restriction avoids
   ambiguous rule placement.
 
-Usage:
+Usage::
 
-```
-python3 boundary_mapper.py --map-file boundary_map.json --json-file firewall-requests/REQ123.auto.tfvars.json
-```
+    python3 boundary_mapper.py --map-file boundary_map.json --json-file firewall-requests/REQ123.auto.tfvars.json
 
 Upon successful completion the `.auto.tfvars.json` file will be updated in
 place with the computed `src_vpc` and `dest_vpc` values.  If a source or
@@ -39,7 +37,6 @@ import ipaddress
 import sys
 import os
 from typing import Dict, List, Tuple, Optional
-
 
 def load_boundary_map(path: str) -> Dict[str, List[str]]:
     """Load a boundary map file, stripping out C-style and C++-style comments.
@@ -60,36 +57,25 @@ def load_boundary_map(path: str) -> Dict[str, List[str]]:
     """
     with open(path) as f:
         lines = f.readlines()
-
     json_lines: List[str] = []
     in_block_comment = False
     for line in lines:
         stripped = line.strip()
-        # Skip block comment start
         if stripped.startswith("/*"):
             in_block_comment = True
             continue
-        # End block comment
         if in_block_comment:
             if stripped.endswith("*/"):
                 in_block_comment = False
             continue
-        # Remove single-line comments (// ...), but allow // inside strings
         if '//' in line:
-            # naive removal: everything after // on the line
             idx = line.find('//')
-            # Only strip if // is not inside a string (between quotes).  We
-            # perform a simple check: count quotes before //.  If odd, assume
-            # inside a string and leave untouched.  This is a heuristic and
-            # assumes no escaped quotes.
             prefix = line[:idx]
             if prefix.count('"') % 2 == 0:
                 line = prefix + "\n"
         json_lines.append(line)
-
     json_str = "".join(json_lines)
     return json.loads(json_str)
-
 
 def build_network_index(boundary_map: Dict[str, List[str]]) -> List[Tuple[ipaddress.IPv4Network, str]]:
     """Create a list of (network, boundary) tuples for efficient lookup.
@@ -110,11 +96,8 @@ def build_network_index(boundary_map: Dict[str, List[str]]) -> List[Tuple[ipaddr
             except Exception as exc:
                 raise ValueError(f"Invalid CIDR '{cidr}' in boundary '{boundary}': {exc}") from exc
             nets.append((net, boundary))
-    # Sort by prefix length descending so that the most specific networks
-    # appear first.  This aids in selecting the longest match.
     nets.sort(key=lambda pair: pair[0].prefixlen, reverse=True)
     return nets
-
 
 def find_boundary_for_network(net: ipaddress.IPv4Network, index: List[Tuple[ipaddress.IPv4Network, str]]) -> Optional[str]:
     """Find the boundary for a given IPv4Network.
@@ -128,17 +111,11 @@ def find_boundary_for_network(net: ipaddress.IPv4Network, index: List[Tuple[ipad
         matches exist, the first (most specific) match is returned.
     """
     for candidate_net, boundary in index:
-        # Check if the candidate network completely covers the given net
         if net.subnet_of(candidate_net):
             return boundary
     return None
 
-
-def determine_boundary(
-    ip_list: List[str],
-    index: List[Tuple[ipaddress.IPv4Network, str]],
-    default_boundary: Optional[str] = None,
-) -> str:
+def determine_boundary(ip_list: List[str], index: List[Tuple[ipaddress.IPv4Network, str]], default_boundary: Optional[str] = None) -> str:
     """Determine a unique boundary for a list of IP range strings.
 
     Args:
@@ -178,93 +155,69 @@ def determine_boundary(
         raise ValueError(f"Ambiguous boundaries {found_boundaries} for IP ranges {ip_list}")
     return next(iter(found_boundaries))
 
-
-def update_tfvars_file(
-    json_path: str,
-    boundary_index: List[Tuple[ipaddress.IPv4Network, str]],
-    default_boundary: Optional[str] = None,
-) -> None:
+def update_tfvars_file(json_path: str, boundary_index: List[Tuple[ipaddress.IPv4Network, str]], default_boundary: Optional[str] = None) -> None:
     """Update the `.auto.tfvars.json` file in place with computed boundaries.
 
     Args:
         json_path: Path to the JSON file generated by the workflow.
         boundary_index: The network index for boundary lookup.
-        default_boundary: Optional fallback boundary name to assign when
-            an IP range does not match any configured boundary.  If None,
-            the function raises an error for unmapped ranges.
+        default_boundary: Optional fallback boundary name for IP ranges that do
+            not match any configured boundary.  If None, unmapped ranges cause
+            an error.
 
     Raises:
         ValueError: If a rule cannot be mapped to a boundary and no default
-            boundary is specified.
+        boundary is specified.
     """
     with open(json_path) as f:
         data = json.load(f)
-
     if "auto_firewall_rules" not in data or not isinstance(data["auto_firewall_rules"], list):
         raise ValueError(f"Unexpected format: {json_path} does not contain 'auto_firewall_rules' list")
-
     for rule in data["auto_firewall_rules"]:
         src_ranges = rule.get("src_ip_ranges", [])
         dst_ranges = rule.get("dest_ip_ranges", [])
-        # Determine boundaries
         src_boundary = determine_boundary(src_ranges, boundary_index, default_boundary)
         dst_boundary = determine_boundary(dst_ranges, boundary_index, default_boundary)
         rule["src_vpc"] = src_boundary
         rule["dest_vpc"] = dst_boundary
-
-    # Write back the updated JSON
     tmp_path = json_path + ".tmp"
     with open(tmp_path, "w") as f:
         json.dump(data, f, indent=2)
         f.write("\n")
     os.replace(tmp_path, json_path)
 
-
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Assign src_vpc/dest_vpc based on IP ranges and a boundary map",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument(
-        "--map-file",
-        required=True,
-        help="Path to boundary_map.json (can include // or /* */ comments)",
-    )
-    parser.add_argument(
-        "--json-file",
-        required=True,
-        help="Path to .auto.tfvars.json to update",
-    )
+    parser.add_argument("--map-file", required=True, help="Path to boundary_map.json (can include // or /* */ comments)")
+    parser.add_argument("--json-file", required=True, help="Path to .auto.tfvars.json to update")
     parser.add_argument(
         "--default-boundary",
         default=None,
         help=(
-            "Fallback boundary name for IP ranges that do not match any configured "
-            "CIDR in the boundary map.  If omitted, unmapped ranges cause an error."
+            "Fallback boundary name for IP ranges that do not match any configured CIDR in the boundary map.  "
+            "If omitted, unmapped ranges cause an error."
         ),
     )
     args = parser.parse_args()
-
     try:
         boundary_map = load_boundary_map(args.map_file)
     except Exception as exc:
         print(f"Failed to load boundary map {args.map_file}: {exc}", file=sys.stderr)
         sys.exit(1)
-
     try:
         boundary_index = build_network_index(boundary_map)
     except Exception as exc:
         print(f"Invalid boundary map: {exc}", file=sys.stderr)
         sys.exit(1)
-
     try:
         update_tfvars_file(args.json_file, boundary_index, args.default_boundary)
     except Exception as exc:
         print(f"Error updating {args.json_file}: {exc}", file=sys.stderr)
         sys.exit(1)
-
     print(f"Updated {args.json_file} with src_vpc and dest_vpc boundaries.")
-
 
 if __name__ == "__main__":
     main()

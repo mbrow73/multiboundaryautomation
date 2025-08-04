@@ -13,7 +13,6 @@
  * `security_profile_group_id` input variable.
  */
 
-
 /*
  * Create one firewall policy per boundary.  The map keys of
  * `vpc_boundaries` should match the `src_vpc`/`dest_vpc` values used in
@@ -115,7 +114,7 @@ locals {
  * selected based on the `target_policy` computed above.  The action
  * and security profile group are derived on‑the‑fly according to the
  * boundary logic: if the source and destination VPC differ (and it is
- * not the intranet→onprem case) then inspection is applied.
+ * not the intranet→on‑prem case) then inspection is applied.
  */
 resource "google_compute_network_firewall_policy_rule" "rule" {
   for_each        = local.expanded_rules_map
