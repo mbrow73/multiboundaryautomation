@@ -1,24 +1,7 @@
 /*
- * Network Firewall Policy Module — Multi‑Boundary
- *
- * This module provisions a Google Cloud network firewall policy per logical
- * boundary/VPC.  Each policy is attached to its own VPC network and
- * populated with the provided firewall rules.  Rules include the source
- * and destination VPC identifiers so that cross‑boundary traffic can be
- * treated differently from intra‑VPC traffic.  An action of
- * `apply_security_profile_group` is automatically applied to any rule
- * where the source and destination VPC differ (except for the special
- * intranet→on‑prem case).  Intra‑VPC traffic is always allowed.  The
- * security profile group ID used for inspection comes from the
- * `security_profile_group_id` input variable.
+ * Network Firewall Policy Module — Multi‑Boundary, Direction‑Free
  */
 
-/*
- * Create one firewall policy per boundary.  The map keys of
- * `vpc_boundaries` should match the `src_vpc`/`dest_vpc` values used in
- * firewall rules.  Each policy is named by combining the base
- * `policy_name` with the boundary key.
- */
 resource "google_compute_network_firewall_policy" "policies" {
   for_each    = var.vpc_boundaries
   name        = "${var.policy_name}-${each.key}"
@@ -26,11 +9,6 @@ resource "google_compute_network_firewall_policy" "policies" {
   description = "NGFW firewall policy for ${each.key}"
 }
 
-/*
- * Attach each policy to its corresponding VPC network.  The
- * `attachment_target` must be the self‑link of the VPC provided in
- * `vpc_boundaries`.
- */
 resource "google_compute_network_firewall_policy_association" "attach" {
   for_each          = var.vpc_boundaries
   name              = each.key
@@ -38,47 +16,29 @@ resource "google_compute_network_firewall_policy_association" "attach" {
   firewall_policy   = google_compute_network_firewall_policy.policies[each.key].id
 }
 
-/*
- * Expand the input rules into one or more per‑policy rules.  When a rule
- * references the special "onprem" boundary, it must traverse the
- * intranet boundary before leaving the cloud.  This means:
- *   • If either the src_vpc or dest_vpc is "onprem", a copy of the rule
- *     is always applied to the intranet policy.
- *   • If the other boundary is not "intranet", another copy is applied to
- *     that boundary as well (to handle the leg between the other VPC and
- *     the intranet hub).
- *   • When both sides are intranet/onprem, only a single intranet rule
- *     is generated.
- */
 locals {
   expanded_rules = flatten([
     for r in var.inet_firewall_rules : [
       for entry in concat(
-        # Destination side: always use the original direction
+        # DEST entry (always ingress into the boundary)
         [
           {
             policy             = lower(r.dest_vpc) == "onprem" ? "intranet" : lower(r.dest_vpc)
             suffix             = "dest"
-            direction_override = r.direction
+            direction_override = "INGRESS"
           }
         ],
-        # Source side: only when the policies differ
+        # SRC entry (always egress out of the boundary) if pols differ
         (
           (lower(r.dest_vpc) == "onprem" ? "intranet" : lower(r.dest_vpc))
           != (lower(r.src_vpc) == "onprem" ? "intranet" : lower(r.src_vpc))
-        )
-        ? [
+        ) ? [
             {
-              policy = lower(r.src_vpc) == "onprem" ? "intranet" : lower(r.src_vpc)
-              suffix = "src"
-              # If either boundary is onprem, keep the original direction
-              # Otherwise, invert to create an ingress leg
-              direction_override = (
-                lower(r.dest_vpc) == "onprem" || lower(r.src_vpc) == "onprem"
-              ) ? r.direction : (upper(r.direction) == "INGRESS" ? "EGRESS" : "INGRESS")
+              policy             = lower(r.src_vpc) == "onprem" ? "intranet" : lower(r.src_vpc)
+              suffix             = "src"
+              direction_override = "EGRESS"
             }
-          ]
-        : []
+          ] : []
       ) : {
         key                = "${r.name}-${entry.policy}-${entry.suffix}"
         rule               = r
@@ -88,7 +48,6 @@ locals {
     ]
   ])
 
-  # Convert to a map for for_each
   expanded_rules_map = {
     for obj in local.expanded_rules : obj.key => merge(
       obj.rule,
@@ -100,13 +59,6 @@ locals {
   }
 }
 
-/*
- * Create firewall rules on the appropriate policy.  The policy is
- * selected based on the `target_policy` computed above.  The action
- * and security profile group are derived on‑the‑fly according to the
- * boundary logic: if the source and destination VPC differ (and it is
- * not the intranet→onprem hub case) then inspection is applied.
- */
 resource "google_compute_network_firewall_policy_rule" "rule" {
   for_each        = local.expanded_rules_map
   firewall_policy = google_compute_network_firewall_policy.policies[each.value.target_policy].id
@@ -114,6 +66,7 @@ resource "google_compute_network_firewall_policy_rule" "rule" {
   priority        = each.value.priority
   direction       = each.value.direction_override
 
+  # Cross-boundary → inspection, except intranet→onprem → allow
   action = (
     lower(each.value.src_vpc) != lower(each.value.dest_vpc) &&
     !(lower(each.value.src_vpc) == "intranet" && lower(each.value.dest_vpc) == "onprem")
