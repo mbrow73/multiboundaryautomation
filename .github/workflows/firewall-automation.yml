@@ -34,14 +34,24 @@ jobs:
             exit 1
           fi
 
-      - name: 📊 Get MAX priority
-        id: maxp
+      - name: 📊 Determine current max priority
+        id: max_priority
+        shell: bash
         run: |
           mkdir -p firewall-requests
-          if compgen -G "firewall-requests/*.auto.tfvars.json" > /dev/null; then
+
+          # If any *.auto.tfvars.json exists, compute the max; otherwise default to 999
+          if ls firewall-requests/*.auto.tfvars.json 1> /dev/null 2>&1; then
             M=$(jq -s '[ .[].auto_firewall_rules[].priority ] | max' firewall-requests/*.auto_tfvars.json)
-          else M=999; fi
-          echo "MAX=$M" >> $GITHUB_OUTPUT
+          else
+            M=999
+          fi
+
+          # Export to GH Actions output
+          echo "MAX_PRIORITY<<EOF" >> $GITHUB_OUTPUT
+          echo "$M"                 >> $GITHUB_OUTPUT
+          echo "EOF"                >> $GITHUB_OUTPUT
+
 
       - name: 📝 Parse & Write JSON
         id: parse
