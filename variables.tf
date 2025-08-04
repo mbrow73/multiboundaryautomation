@@ -87,8 +87,7 @@ variable "vpc_boundaries" {
   description = "Map of boundary name to VPC network self‑link.  Example: { inet = \"projects/.../global/networks/default\", intranet = \"projects/...\" }"
   type        = map(string)
   default = {
-  intranet = "projects/my-project/global/networks/intranet-vpc"
-  dmz      = "projects/my-project/global/networks/dmz-vpc"
+    inet = ""
   }
 }
 
