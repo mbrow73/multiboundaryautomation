@@ -12,7 +12,6 @@ labels: ["firewall-request"]
 🔹 New Destination IP(s) or CIDR(s): 10.1.2.22/32  
 🔹 New Port(s): 443  
 🔹 New Protocol: tcp  
-🔹 New Direction: INGRESS  
 🔹 New Business Justification: Need to restrict to a smaller range
 
 #### Rule 2
@@ -20,5 +19,4 @@ labels: ["firewall-request"]
 🔹 New Destination IP(s) or CIDR(s): 10.1.2.0/24  
 🔹 New Port(s): 8443  
 🔹 New Protocol: tcp  
-🔹 New Direction: EGRESS  
 🔹 New Business Justification: Another justification
