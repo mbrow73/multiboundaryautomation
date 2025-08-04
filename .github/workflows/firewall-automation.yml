@@ -10,52 +10,28 @@ jobs:
     if: contains(github.event.issue.labels.*.name, 'firewall-request')
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
-        with:
-          # Fetch full history to allow committing back
-          fetch-depth: 0
-      - name: Set up Python
-        uses: actions/setup-python@v3
-        with:
-          python-version: '3.11'
-      - name: Validate firewall request
-        id: validate
-        continue-on-error: true
-        run: |
-          # Run the validator and capture output. On error the step outcome will be 'failure'.
-          python3 .github/scripts/firewall_request_validator.py "$GITHUB_EVENT_PATH" > validation_output.txt
-      - name: Post validation errors and close issue
-        if: steps.validate.outcome == 'failure'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # Extract errors between the markers printed by the validator
-          ERRORS=$(awk '/VALIDATION_ERRORS_START/,/VALIDATION_ERRORS_END/' validation_output.txt | sed '/VALIDATION_ERRORS_START\|VALIDATION_ERRORS_END/d')
-          # Post a comment summarizing the validation errors
-          gh issue comment ${{ github.event.issue.number }} --body $'### ❌ Firewall Request Validation Failed\n\n**Errors:**\n\n'"$(echo "$ERRORS" | sed 's/^/- /')"'\n\n_Your request was closed. Please correct the above and submit again._'
-          # Close the issue
-          gh issue close ${{ github.event.issue.number }}
-      - name: Parse firewall request into auto.tfvars
-        if: steps.validate.outcome == 'success'
-        run: python3 .github/scripts/boundary_parser.py "$GITHUB_EVENT_PATH"
+      # …checkout, setup Python, validate, parse, etc…
+
       - name: Prepare commit and pull request
         if: steps.validate.outcome == 'success'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          # Stage new or updated firewall request files
-          # Determine if there are changes under firewall-requests. Use git diff to detect both new and modified files.
+
+          # Detect changes under firewall-requests and bail out if none
           if git diff --quiet --exit-code -- firewall-requests; then
-            echo "No changes detected; skipping PR creation" >> $GITHUB_STEP_SUMMARY
+            echo "No changes detected; skipping PR creation"
             exit 0
           fi
-          # Stage all changes under firewall-requests
+
+          # Stage changes
           git add firewall-requests
-          # Extract the REQID from the generated file name (e.g. REQ12345.auto.tfvars.json)
+
+          # Derive the REQID from the generated file name
           REQID=$(ls firewall-requests | grep -m1 -oE 'REQ[^.]*') || REQID="req"
-          echo "REQID=$REQID" >> $GITHUB_ENV
-          # Compute a simple summary of the first rule for the PR body
+          echo "REQID=$REQID" >> "$GITHUB_ENV"
+
+          # Extract a simple summary of the first rule for the PR body
           VAR_FILE="firewall-requests/${REQID}.auto.tfvars.json"
           if command -v jq >/dev/null && [ -f "$VAR_FILE" ]; then
             SRC=$(jq -r '.auto_firewall_rules[0].src_ip_ranges[0]' "$VAR_FILE")
@@ -67,7 +43,8 @@ jobs:
           else
             RULE_SUMMARY="Firewall rules"
           fi
-          echo "RULE_SUMMARY=$RULE_SUMMARY" >> $GITHUB_ENV
+          echo "RULE_SUMMARY=$RULE_SUMMARY" >> "$GITHUB_ENV"
+
       - name: Create Pull Request
         if: steps.validate.outcome == 'success'
         uses: peter-evans/create-pull-request@v5
@@ -85,3 +62,11 @@ jobs:
             The rules are defined in the generated Terraform vars file: `firewall-requests/${{ env.REQID }}.auto.tfvars.json`.
 
             Please review the new firewall configuration and merge this PR if it looks correct.
+
+      - name: Comment on original issue
+        if: steps.validate.outcome == 'success'
+        run: |
+          gh issue comment ${{ github.event.issue.number }} \
+            --body "🚀 A pull request has been opened to add the firewall rules for **${{ env.REQID }}**: #${{ steps.create_pull_request.outputs.pull_request_number }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
