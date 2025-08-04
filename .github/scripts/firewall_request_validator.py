@@ -1,107 +1,107 @@
-#!/usr/bin/env python3
-"""
-firewall_request_validator.py
-
-Minimal validation for firewall requests.  This script checks the
-structure of the issue body for required fields and ensures that IP
-addresses and CIDRs are valid, ports are numeric, protocols and
-directions are recognised, and the request ID does not already
-exist.  Duplicate rules and malformed input will cause the script
-to exit with a non‑zero status.
-
-Usage:
-  python3 firewall_request_validator.py /path/to/github_event.json
-"""
 import json
-import os
 import re
 import sys
-import ipaddress
+from pathlib import Path
 
-FIREWALL_REQUESTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'firewall-requests')
-
-
-def load_event(path: str) -> dict:
-    with open(path, 'r', encoding='utf-8') as f:
-        return json.load(f)
-
-
-def parse_issue_body(body: str) -> dict:
-    patterns = {
-        'carid': r'CAR\s*ID\s*: *([\w-]+)',
-        'reqid': r'REQ\s*ID\s*: *([\w-]+)',
-        'source': r'New\s+Source\s+IP\s*: *([\d./:]+)',
-        'destination': r'New\s+Destination\s+IP\s*: *([\d./:]+)',
-        'ports': r'Ports\s*: *([\w,\-]+)',
-        'protocol': r'Protocol\s*: *([\w]+)',
-        'direction': r'Direction\s*: *([\w]+)',
-    }
-    result = {}
-    for key, pattern in patterns.items():
-        match = re.search(pattern, body, re.IGNORECASE)
-        if match:
-            result[key] = match.group(1).strip()
-        else:
-            result[key] = ''
-    return result
-
-
-def validate_ip(ip_str: str) -> bool:
+def load_event(event_path: str) -> dict:
+    """Load the GitHub event payload from a JSON file."""
     try:
-        ipaddress.ip_network(ip_str, strict=False)
-        return True
-    except ValueError:
-        return False
+        with open(event_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as exc:
+        raise SystemExit(f"Failed to load event JSON from {event_path}: {exc}")
 
+def normalise_key(key: str) -> str:
+    """Normalise field keys by stripping punctuation and suffixes.
 
-def validate_ports(port_str: str) -> bool:
-    for part in port_str.split(','):
-        part = part.strip()
-        if '-' in part:
-            start, end = part.split('-', 1)
-            if not (start.isdigit() and end.isdigit() and int(start) <= int(end)):
-                return False
-        else:
-            if not part.isdigit():
-                return False
-            num = int(part)
-            if not (0 < num <= 65535):
-                return False
-    return True
+    The validator accepts both legacy labels (e.g. "New Source IP(s) or CIDR(s)")
+    and simplified labels (e.g. "New Source IP"). This helper removes text
+    inside parentheses and normalises whitespace so that both map to a single
+    canonical key.
+    """
+    # Remove anything in parentheses and strip whitespace
+    key = re.sub(r"\(.*?\)", "", key)
+    key = key.strip().rstrip(":").strip()
+    return key.lower()
 
+def parse_rules(body: str) -> list:
+    """Extract a list of rule dictionaries from the issue body.
+
+    The body is expected to contain one or more sections starting with a
+    heading like ``#### Rule X`` followed by lines of the form ``Key: Value``.
+    Emoji bullets (e.g. ``🔹``) and dashes are ignored. Blank lines and
+    comments are skipped. Lines without a colon are ignored.
+
+    Returns a list of dictionaries where each key is the canonicalised field
+    name (lowercase) and the value is the trimmed string after the colon.
+    """
+    rules = []
+    current_rule = None
+    for line in body.splitlines():
+        stripped = line.strip()
+        # Start a new rule on headings like "#### Rule 1"
+        if re.match(r"^#{2,}\s*Rule\s+\d+", stripped, re.IGNORECASE):
+            if current_rule:
+                rules.append(current_rule)
+            current_rule = {}
+            continue
+        # Skip comments and empty lines
+        if not stripped or stripped.startswith("<!--"):
+            continue
+        # Remove leading emojis or bullets
+        stripped = re.sub(r"^[\W_]+", "", stripped)
+        if ":" not in stripped:
+            continue
+        raw_key, raw_value = stripped.split(":", 1)
+        key = normalise_key(raw_key)
+        value = raw_value.strip()
+        if current_rule is None:
+            # If no rule heading was seen, start an implicit rule
+            current_rule = {}
+        current_rule[key] = value
+    if current_rule:
+        rules.append(current_rule)
+    return rules
+
+def validate_rules(rules: list) -> list:
+    """Return a list of error messages if required fields are missing."""
+    # Required fields in canonical form
+    required_fields = [
+        "new source ip",
+        "new destination ip",
+        "new port(s)",
+        "new protocol",
+        "new direction",
+        "new business justification",
+    ]
+    errors = []
+    for idx, rule in enumerate(rules, start=1):
+        for field in required_fields:
+            if field not in rule or not rule[field]:
+                errors.append(f"Rule {idx}: Missing {field.title()}")
+    return errors
 
 def main(event_path: str) -> None:
     event = load_event(event_path)
-    body = event.get('issue', {}).get('body', '')
-    fields = parse_issue_body(body)
-    errors = []
-    if not fields['carid']:
-        errors.append('CAR ID is missing.')
-    if not fields['reqid']:
-        errors.append('REQ ID is missing.')
-    if not validate_ip(fields['source']):
-        errors.append(f"Invalid source IP/CIDR: {fields['source']}")
-    if not validate_ip(fields['destination']):
-        errors.append(f"Invalid destination IP/CIDR: {fields['destination']}")
-    if not validate_ports(fields['ports']):
-        errors.append(f"Invalid ports: {fields['ports']}")
-    if fields['protocol'].lower() not in ['tcp', 'udp', 'icmp']:
-        errors.append(f"Unsupported protocol: {fields['protocol']}")
-    if fields['direction'].upper() not in ['INGRESS', 'EGRESS']:
-        errors.append(f"Unsupported direction: {fields['direction']}")
-    # Ensure request ID is unique
-    if fields['reqid']:
-        existing_file = os.path.join(FIREWALL_REQUESTS_DIR, f"{fields['reqid']}.auto.tfvars.json")
-        if os.path.exists(existing_file):
-            errors.append(f"Request ID {fields['reqid']} already exists.")
+    try:
+        body = event["issue"]["body"]
+    except KeyError:
+        raise SystemExit("GitHub event JSON does not contain issue.body")
+    rules = parse_rules(body)
+    errors = validate_rules(rules)
     if errors:
-        for e in errors:
-            print(e, file=sys.stderr)
+        print("VALIDATION_ERRORS_START")
+        for err in errors:
+            print(err)
+        print("VALIDATION_ERRORS_END")
         sys.exit(1)
+    print("Validation successful")
 
-
-if __name__ == '__main__':
-    if len(sys.argv) < 2:
-        print('Usage: firewall_request_validator.py <event path>', file=sys.stderr)
-        sys.exit(1)
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        print(
+            "Usage: firewall_request_validator.py <path_to_event_json>",
+            file=sys.stderr,
+        )
+        sys.exit(2)
     main(sys.argv[1])
