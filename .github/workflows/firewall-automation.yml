@@ -14,41 +14,53 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v3
+      - name: "⬇️ Checkout repo"
+        uses: actions/checkout@v3
 
-      - name: Set up Python
+      - name: "🐍 Set up Python"
         uses: actions/setup-python@v4
         with:
           python-version: '3.x'
 
-      - name: 📝 Parse Issue & Generate JSON
+      - name: "📝 Parse Issue & Generate JSON"
         id: parse_and_write
-        run: |
-          set -e
-          BODY=$(printf '%s' "${{ github.event.issue.body }}" | tr -d $'\r')
-          REQID=$(echo "$BODY" | grep -i 'Request ID' | cut -d: -f2 | xargs)
-          echo "REQID=$REQID" >> $GITHUB_OUTPUT
-
-          # Split rule blocks and build JSON
-          echo 'BEGIN JSON'
-          # AWK or Python to pull src_ip, dest_ip, ports, protocol, desc
-          # Write to firewall-requests/${REQID}.auto.tfvars.json
-
-      - name: 🗺️ Map IPs to Boundaries
         shell: bash
         run: |
+          set -euo pipefail
+          BODY=$(printf '%s' "${{ github.event.issue.body }}" | tr -d '\r')
+          REQID=$(echo "$BODY" | grep -i 'Request ID' | cut -d: -f2 | xargs)
+          echo "REQID=$REQID" >> $GITHUB_OUTPUT
+          mkdir -p firewall-requests
+          # (Insert your extraction logic here to emit a JSON array of rules)
+          cat <<EOF > firewall-requests/${REQID}.auto.tfvars.json
+          {
+            "auto_firewall_rules": [
+              /* your generated rules go here */
+            ]
+          }
+          EOF
+
+      - name: "🗺️ Map IPs to Boundaries"
+        shell: bash
+        run: |
+          JSON="firewall-requests/${{ steps.parse_and_write.outputs.REQID }}.auto.tfvars.json"
+          if [ ! -f "$JSON" ]; then
+            echo "❌ Error: $JSON not found" >&2
+            exit 1
+          fi
           python3 .github/scripts/boundary_mapper.py \
             --map-file boundary_map.json \
-            --json-file firewall-requests/${{ steps.parse_and_write.outputs.REQID }}.auto.tfvars.json
+            --json-file "$JSON" \
+            --default-boundary dmz
 
-      - name: ⏫ Create or Update Pull Request
+      - name: "⏫ Create or Update Pull Request"
         uses: peter-evans/create-pull-request@v6
         with:
           commit-message: "[Firewall] ${{ steps.parse_and_write.outputs.REQID }}"
           branch: firewall/${{ steps.parse_and_write.outputs.REQID }}
           title: "Firewall Request ${{ steps.parse_and_write.outputs.REQID }}"
           body: |
-            :robot: PR for firewall rules (${{ steps.parse_and_write.outputs.REQID }})
+            :robot: Generated firewall rules for ${{ steps.parse_and_write.outputs.REQID }}.
           add-paths: |
             firewall-requests/${{ steps.parse_and_write.outputs.REQID }}.auto.tfvars.json
           base: main
