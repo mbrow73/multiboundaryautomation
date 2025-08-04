@@ -10,7 +10,8 @@ labels: ["firewall-request"]
 #### Rule 1
 🔹 New Source IP(s) or CIDR(s): 203.0.113.55/32  
 🔹 New Destination IP(s) or CIDR(s): 10.1.2.22/32  
-🔹 New Direction: EGRESS
+<!-- Direction is now determined automatically based on the source/destination boundaries. -->
+<!-- Remove the direction field entirely; requestors no longer need to specify INGRESS or EGRESS. -->
 🔹 New Port(s): 443  
 🔹 New Protocol: tcp  
 🔹 New Business Justification: Need to restrict to a smaller range
@@ -18,7 +19,8 @@ labels: ["firewall-request"]
 #### Rule 2
 🔹 New Source IP(s) or CIDR(s): 10.2.3.4/32  
 🔹 New Destination IP(s) or CIDR(s): 10.1.2.0/24  
-🔹 New Direction: INGRESS
+<!-- Direction is now determined automatically based on the source/destination boundaries. -->
+<!-- Remove the direction field entirely; requestors no longer need to specify INGRESS or EGRESS. -->
 🔹 New Port(s): 8443  
 🔹 New Protocol: tcp  
 🔹 New Business Justification: Another justification

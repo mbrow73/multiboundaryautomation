@@ -120,9 +120,12 @@ def validate_rule(rule, idx=1):
         )
 
     # Direction validation
+    # Direction is optional for non-directional requests.  Only validate when present.
     direction = rule.get("direction", "")
-    if direction.upper() not in {"INGRESS", "EGRESS"}:
-        errors.append(f"Rule {idx}: Direction must be INGRESS or EGRESS. Found: '{direction}'")
+    if direction and direction.upper() not in {"INGRESS", "EGRESS"}:
+        errors.append(
+            f"Rule {idx}: Direction must be INGRESS or EGRESS when provided. Found: '{direction}'"
+        )
 
     # CARID in name
     carid = rule["name"].split("-")[2]

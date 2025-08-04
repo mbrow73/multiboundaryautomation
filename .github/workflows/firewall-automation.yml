@@ -110,6 +110,7 @@ jobs:
                 if(lines[i] ~ /New Destination IP/)    { sub(/.*: /,"",lines[i]); gsub(/^[ \t]+|[ \t]+$/,"",lines[i]); dst=lines[i]; }
                 if(lines[i] ~ /New Port/)              { sub(/.*: /,"",lines[i]); gsub(/^[ \t]+|[ \t]+$/,"",lines[i]); ports=lines[i]; }
                 if(lines[i] ~ /New Protocol/)          { sub(/.*: /,"",lines[i]); gsub(/^[ \t]+|[ \t]+$/,"",lines[i]); proto=lines[i]; }
+                # Direction is no longer requested from users.  If present, capture but leave empty otherwise.
                 if(lines[i] ~ /New Direction/)         { sub(/.*: /,"",lines[i]); gsub(/^[ \t]+|[ \t]+$/,"",lines[i]); dir=lines[i]; }
                 if(lines[i] ~ /New Business Justification/) { sub(/.*: /,"",lines[i]); gsub(/^[ \t]+|[ \t]+$/,"",lines[i]); just=lines[i]; }
               }
@@ -117,8 +118,9 @@ jobs:
               desc     = rulename " | " just;
               printf("{\"name\":\"%s\",\"description\":\"%s\",\"direction\":\"%s\",\"src_vpc\":\"%s\",\"dest_vpc\":\"%s\",\"src_ip_ranges\":[\"%s\"],\"dest_ip_ranges\":[\"%s\"],\"ports\":[\"%s\"],\"protocol\":\"%s\",\"priority\":%d,\"enable_logging\":true}\n", \
                      rulename, desc, dir, svpc, dvpc, src, dst, ports, tolower(proto), maxp+NR) >> "rules.json";
-              rule_flow = sprintf("- **Rule %d:** %s → %s on %s/%s _(Direction: %s)_\n    Justification: %s\n", \
-                                  NR, src, dst, tolower(proto), ports, dir, just);
+              # Build human-readable summary.  Omit the direction since it is now determined automatically.
+              rule_flow = sprintf("- **Rule %d:** %s → %s on %s/%s\n    Justification: %s\n", \
+                                  NR, src, dst, tolower(proto), ports, just);
               print rule_flow >> "rules_summary.txt";
             }
           '

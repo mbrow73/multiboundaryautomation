@@ -180,9 +180,11 @@ def main():
             r["src"], r["dst"], r["ports"], r["proto"], r["direction"], r["just"]
         )
 
-        # all fields present?
-        if not all([src, dst, ports, proto, direction, just]):
-            errors.append(f"❌ Rule {idx}: All fields must be present.")
+        # all required fields present?  Direction is now optional because
+        # requests are non-directional.  Validate only source, destination,
+        # ports, protocol, and justification.
+        if not all([src, dst, ports, proto, just]):
+            errors.append(f"❌ Rule {idx}: All fields (source, destination, port, protocol, justification) must be present.")
             continue
 
         # Protocol
@@ -218,7 +220,8 @@ def main():
     existing = parse_existing_rules()
     for idx, blk in enumerate(blocks, 1):
         r = parse_rule_block(blk)
-        if not all([r["src"], r["dst"], r["ports"], r["proto"], r["direction"]]):
+        # Skip duplicate/redundancy checks if any of the essential fields are missing.
+        if not all([r["src"], r["dst"], r["ports"], r["proto"]]):
             continue
         if rule_exact_match(r, existing):
             errors.append(f"❌ Rule {idx}: Exact duplicate of existing rule.")
