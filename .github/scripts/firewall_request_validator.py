@@ -71,8 +71,11 @@ def parse_rules(body: str) -> list:
     current_rule = None
     for line in body.splitlines():
         stripped = line.strip()
-        # Start a new rule on headings like "#### Rule 1"
-        if re.match(r"^#{2,}\s*Rule\s+\d+", stripped, re.IGNORECASE):
+        # Start a new rule when encountering a rule header. Users may
+        # include markdown headings (e.g. "#### Rule 1") or plain text
+        # (e.g. "Rule 1"). The pattern below makes the leading ``#``
+        # characters optional to support both cases.
+        if re.match(r"^(?:#+\s*)?Rule\s+\d+", stripped, re.IGNORECASE):
             if current_rule:
                 rules.append(current_rule)
             current_rule = {}
