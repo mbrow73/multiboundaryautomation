@@ -1,3 +1,35 @@
+#!/usr/bin/env python3
+"""
+firewall_request_validator.py
+
+This script validates firewall rule requests submitted via GitHub issues. It expects
+to be passed the path to the GitHub event payload (a JSON file provided by
+GitHub Actions in the GITHUB_EVENT_PATH environment variable). The payload must
+contain an "issue" object with a "body" field representing the Markdown issue
+content.
+
+The validator parses the issue body for one or more firewall rules, ensuring
+that each rule contains all required fields. Supported field labels include
+both the legacy format (e.g. "New Source IP(s) or CIDR(s)") and the
+simplified format (e.g. "New Source IP"). The validator is case-insensitive
+and tolerant of extra whitespace. If any required field is missing or blank,
+validation errors are printed between ``VALIDATION_ERRORS_START`` and
+``VALIDATION_ERRORS_END`` markers and the script exits with a non-zero status.
+Otherwise it prints a success message.
+
+Example usage (from within a GitHub Action):
+
+  python3 .github/scripts/firewall_request_validator.py "$GITHUB_EVENT_PATH"
+
+For local testing you can wrap your issue body in a minimal JSON structure:
+
+  {
+    "issue": { "body": "### Request ID (REQID): REQ123\n..." }
+  }
+
+and pass the resulting JSON file as the first argument to this script.
+"""
+
 import json
 import re
 import sys

@@ -1,7 +1,6 @@
 variable "project_id" {
   description = "GCP project ID for the firewall deployment"
   type        = string
-  default = "default"
 }
 
 variable "boundary_vpcs" {
@@ -13,18 +12,12 @@ variable "boundary_vpcs" {
     placeholder as on‑prem traffic is routed via the intranet boundary.
   EOT
   type = map(string)
-  default = {
-    inet        = "projects/my‑project/global/networks/inet‑vpc"
-    intranet    = "projects/my‑project/global/networks/intranet‑vpc"
-    third_party = "projects/my‑project/global/networks/thirdparty‑vpc"
-    on_prem     = ""  # Placeholder for on-prem boundary
-  }
 }
 
 variable "security_profile_group_id" {
   description = "ID of the security profile group used for deep packet inspection on cross‑boundary egress flows"
   type        = string
-  default     = "global/securityProfileGroups/my-security-profile-group"
+  default     = ""
 }
 
 variable "manual_firewall_rules" {
