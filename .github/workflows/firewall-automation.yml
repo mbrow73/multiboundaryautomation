@@ -114,7 +114,7 @@ jobs:
           SUMMARY="- **Rule 1:** $SRC → $DST on $PROTO/$PORT _(Justification: $JUST)_"
 
           mkdir -p firewall-requests
-          echo "$TFVARS" > firewall-requests/${REQ}.auto_tfvars.json
+          echo "$TFVARS" > firewall-requests/${REQ}.auto.tfvars.json
 
           # Export outputs
           echo "REQ=$REQ"                    >> $GITHUB_OUTPUT
