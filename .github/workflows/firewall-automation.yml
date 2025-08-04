@@ -58,7 +58,7 @@ jobs:
         run: |
           mkdir -p firewall-requests
           shopt -s nullglob
-          files=(firewall-requests/*.auto_tfvars.json)
+          files=(firewall-requests/*.auto.tfvars.json)
           if (( ${#files[@]} )); then
             M=$(jq -s '[ .[].auto_firewall_rules[].priority ] | max' "${files[@]}")
           else
@@ -81,7 +81,7 @@ jobs:
           #   "auto_firewall_rules": [ ... ] and no "direction" field. ]
 
           mkdir -p firewall-requests
-          echo "$TFVARS" | jq '.' > firewall-requests/${REQ}.auto_tfvars.json
+          echo "$TFVARS" | jq '.' > firewall-requests/${REQ}.auto.tfvars.json
 
           echo "REQ=$REQ"           >> $GITHUB_OUTPUT
           echo "RULE_SUMMARY<<EOF" >> $GITHUB_OUTPUT
@@ -108,11 +108,11 @@ jobs:
             **Rule Flow Summary:**
             ${{ steps.parse.outputs.RULE_SUMMARY }}
 
-            _See_ `firewall-requests/${{ steps.parse.outputs.REQ }}.auto_tfvars.json` _for details._
+            _See_ `firewall-requests/${{ steps.parse.outputs.REQ }}.auto.tfvars.json` _for details._
 
             Closes #${{ github.event.issue.number }}
           add-paths: |
-            firewall-requests/${{ steps.parse.outputs.REQ }}.auto_tfvars.json
+            firewall-requests/${{ steps.parse.outputs.REQ }}.auto.tfvars.json
           base: main
 
       - name: 💬 Comment PR Link to Issue
