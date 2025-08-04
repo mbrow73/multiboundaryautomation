@@ -33,7 +33,7 @@ jobs:
 
           # Duplicate-REQID guard
           REQID=$(grep -i "Request ID" issue.txt | head -1 | cut -d: -f2- | xargs)
-          if [ -f firewall-requests/${REQID}.auto_tfvars.json ]; then
+          if [ -f firewall-requests/${REQID}.auto.tfvars.json ]; then
             gh issue comment ${{ github.event.issue.number }} --body $'### ❌ Duplicate Request ID\n\nThe Request ID **'"${REQID}"'** has already been used. Please choose a new one or use an update request.'
             gh issue close ${{ github.event.issue.number }}
             exit 1
@@ -76,9 +76,9 @@ jobs:
           CAR=$(echo "$BODY" | grep -i "CARID"       | head -1 | cut -d: -f2- | xargs)
           MAXP=${{ steps.max_priority.outputs.MAX_PRIORITY }}
 
-          # Split rules into JSON and summary (drop any direction parsing)
-          # … your existing AWK logic here, but remove the New Direction capture …
-          # Assume that produces variables TFVARS and SUMMARY
+          # [ Your existing AWK or parsing logic goes here,
+          #   ensuring TFVARS contains a JSON object with
+          #   "auto_firewall_rules": [ ... ] and no "direction" field. ]
 
           mkdir -p firewall-requests
           echo "$TFVARS" | jq '.' > firewall-requests/${REQ}.auto_tfvars.json
