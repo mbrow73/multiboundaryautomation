@@ -253,8 +253,9 @@ def main():
     # Load rules and mapping
     rule_map, file_map = load_all_rules()
 
-    # Stage per-file updates: map file -> (remaining_rules, updated_rules)
-    files_to_update: Dict[str, Tuple[List[Dict[str, Any]], List[Tuple[str, Dict[str, Any]]]]] = {}
+    # Stage per-file updates: map file -> (remaining_rules, updated_rules).
+    # For the in‑place update workflow, `updated_rules` is a list of updated rule dicts.
+    files_to_update: Dict[str, Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]] = {}
 
     # Process each update request
     for req in update_reqs:
@@ -281,22 +282,6 @@ def main():
             idx_in_file = 1
         to_update["_update_index"] = idx_in_file
 
-        # Determine the original request ID from the rule's name.  Rule names
-        # follow the pattern 'AUTO-<REQID>-<CARID>-<PROTO>-<PORTS>-<INDEX>'.  We
-        # capture the second token (index 1) as the old request ID.
-        name_parts = to_update["name"].split("-")
-        old_id = name_parts[1] if len(name_parts) > 1 else ""
-        # Enforce that the new request ID cannot be the same as the rule's existing
-        # request ID.  This prevents accidental in‑place updates and ensures
-        # updated rules move to a distinct request file.
-        if new_reqid == old_id:
-            errors.append(
-                f"Rule {idx}: New Request ID '{new_reqid}' must differ from the rule's current request ID '{old_id}'."
-            )
-            # We still update files_to_update so the remaining rules are preserved.
-            files_to_update[file] = (remaining, updated_list)
-            continue
-
         # Build updates dict based on provided fields
         new_fields: Dict[str, Any] = {}
         if req["src_ip_ranges"]:
@@ -312,17 +297,16 @@ def main():
         if req["description"]:
             new_fields["description"] = req["description"]
         new_carid = req["carid"]
-        # Generate the updated rule using the new request ID
+        # Generate the updated rule using the new request ID.  In the in‑place
+        # workflow, we ignore the original request ID and simply update the
+        # rule fields.  The updated rule will be written back to the same file.
         updated_rule = update_rule_fields(to_update, new_fields, new_reqid, new_carid)
         # Validate the updated rule
         errs = validate_rule(updated_rule, idx)
         if errs:
             errors.extend(errs)
         else:
-            # Append the updated rule and its old request ID (for tracking only).  We
-            # no longer rely on old_id for file decisions since all updated rules
-            # are moved to the new request file.
-            updated_list.append((old_id, updated_rule))
+            updated_list.append(updated_rule)
             summaries.append(make_update_summary(idx, to_update, req, updated_rule))
         files_to_update[file] = (remaining, updated_list)
 
@@ -334,67 +318,47 @@ def main():
         print("VALIDATION_ERRORS_END")
         sys.exit(1)
 
-    # Apply modifications: for each file, remove the updated rules and write the rest back.
-    # All updated rules are appended to the new request file, regardless of the original request ID.
+    # Apply modifications: rewrite updated rules in place.  For each file we
+    # combine the remaining (untouched) rules with the updated rules and
+    # write the combined list back to the same file.  Empty files are left
+    # untouched unless all rules were updated, in which case the file will be
+    # removed.  We track all changed files so we can run boundary mapping.
     changed_files: set = set()
-    new_rules_to_append: List[Dict[str, Any]] = []
     for file, (remaining_rules, updated_rules) in files_to_update.items():
-        # Build a set of rule names that are being updated
+        # Build a set of names of rules being updated in this file
         updated_names = {req["rule_name"] for req in update_reqs}
-        # Build remaining rules by excluding any rule whose name matches an update request
-        new_remaining = [r for r in remaining_rules if r.get("name") not in updated_names]
-        # All updated rules, regardless of old vs new ID, will be moved to the new file
-        for old_id, upd_rule in updated_rules:
-            new_rules_to_append.append(upd_rule)
-        # Write back or remove the original file
-        if new_remaining:
-            # Clean helper fields
-            for r in new_remaining:
-                r.pop("_update_index", None)
-                r["src_ip_ranges"] = [ip for ip in r.get("src_ip_ranges", []) if ip]
-                r["dest_ip_ranges"] = [ip for ip in r.get("dest_ip_ranges", []) if ip]
-                r["ports"] = [p for p in r.get("ports", []) if p]
+        # Combine remaining rules (excluding ones slated for update) with the updated rules
+        combined_rules = []
+        # Add remaining rules that are not being updated
+        for r in remaining_rules:
+            if r.get("name") not in updated_names:
+                new_r = r.copy()
+                new_r.pop("_update_index", None)
+                new_r["src_ip_ranges"] = [ip for ip in new_r.get("src_ip_ranges", []) if ip]
+                new_r["dest_ip_ranges"] = [ip for ip in new_r.get("dest_ip_ranges", []) if ip]
+                new_r["ports"] = [p for p in new_r.get("ports", []) if p]
+                combined_rules.append(new_r)
+        # Add the updated rules
+        for r in updated_rules:
+            new_r = r.copy()
+            new_r.pop("_update_index", None)
+            new_r["src_ip_ranges"] = [ip for ip in new_r.get("src_ip_ranges", []) if ip]
+            new_r["dest_ip_ranges"] = [ip for ip in new_r.get("dest_ip_ranges", []) if ip]
+            new_r["ports"] = [p for p in new_r.get("ports", []) if p]
+            combined_rules.append(new_r)
+        # Write combined list back to the file
+        if combined_rules:
             tmp_path = file + ".tmp"
             with open(tmp_path, "w") as f:
-                json.dump({"auto_firewall_rules": new_remaining}, f, indent=2)
+                json.dump({"auto_firewall_rules": combined_rules}, f, indent=2)
                 f.write("\n")
             os.replace(tmp_path, file)
             changed_files.add(file)
         else:
+            # If no rules remain, remove the file
             if os.path.exists(file):
                 os.remove(file)
                 changed_files.add(file)
-
-    # Write all updated rules to the new request file
-    if new_rules_to_append:
-        # Clean helper fields on new rules
-        cleaned_new = []
-        for r in new_rules_to_append:
-            r = r.copy()
-            r.pop("_update_index", None)
-            r["src_ip_ranges"] = [ip for ip in r.get("src_ip_ranges", []) if ip]
-            r["dest_ip_ranges"] = [ip for ip in r.get("dest_ip_ranges", []) if ip]
-            r["ports"] = [p for p in r.get("ports", []) if p]
-            cleaned_new.append(r)
-        new_dir = "firewall-requests"
-        new_filename = f"{new_reqid}.auto.tfvars.json"
-        new_path = os.path.join(new_dir, new_filename)
-        os.makedirs(new_dir, exist_ok=True)
-        existing_rules = []
-        if os.path.exists(new_path):
-            with open(new_path) as f:
-                try:
-                    data = json.load(f)
-                    existing_rules = data.get("auto_firewall_rules", [])
-                except Exception:
-                    existing_rules = []
-        combined_new = existing_rules + cleaned_new
-        tmp_new = new_path + ".tmp"
-        with open(tmp_new, "w") as f:
-            json.dump({"auto_firewall_rules": combined_new}, f, indent=2)
-            f.write("\n")
-        os.replace(tmp_new, new_path)
-        changed_files.add(new_path)
 
     # Write summary file
     with open("rule_update_summary.txt", "w") as f:
