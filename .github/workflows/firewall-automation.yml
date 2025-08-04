@@ -39,18 +39,49 @@ jobs:
       - name: Parse firewall request into auto.tfvars
         if: steps.validate.outcome == 'success'
         run: python3 .github/scripts/boundary_parser.py "$GITHUB_EVENT_PATH"
-      - name: Commit generated firewall rules
+      - name: Prepare commit and pull request
         if: steps.validate.outcome == 'success'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           # Stage new or updated firewall request files
-          if [ -n "$(git status --porcelain firewall-requests)" ]; then
-            git add firewall-requests
-            git commit -m "chore: add firewall rules for ${{ github.event.issue.number }}"
-            git push origin HEAD:${{ github.ref }}
-          else
-            echo "No changes to commit"
+          # Determine if there are changes under firewall-requests. Use git diff to detect both new and modified files.
+          if git diff --quiet --exit-code -- firewall-requests; then
+            echo "No changes detected; skipping PR creation" >> $GITHUB_STEP_SUMMARY
+            exit 0
           fi
+          # Stage all changes under firewall-requests
+          git add firewall-requests
+          # Extract the REQID from the generated file name (e.g. REQ12345.auto.tfvars.json)
+          REQID=$(ls firewall-requests | grep -m1 -oE 'REQ[^.]*') || REQID="req"
+          echo "REQID=$REQID" >> $GITHUB_ENV
+          # Compute a simple summary of the first rule for the PR body
+          VAR_FILE="firewall-requests/${REQID}.auto.tfvars.json"
+          if command -v jq >/dev/null && [ -f "$VAR_FILE" ]; then
+            SRC=$(jq -r '.auto_firewall_rules[0].src_ip_ranges[0]' "$VAR_FILE")
+            DEST=$(jq -r '.auto_firewall_rules[0].dest_ip_ranges[0]' "$VAR_FILE")
+            PROTOCOL=$(jq -r '.auto_firewall_rules[0].protocol' "$VAR_FILE")
+            PORTS=$(jq -r '.auto_firewall_rules[0].ports' "$VAR_FILE")
+            DIR=$(jq -r '.auto_firewall_rules[0].direction' "$VAR_FILE")
+            RULE_SUMMARY="$SRC -> $DEST $PROTOCOL $PORTS ($DIR)"
+          else
+            RULE_SUMMARY="Firewall rules"
+          fi
+          echo "RULE_SUMMARY=$RULE_SUMMARY" >> $GITHUB_ENV
+      - name: Create Pull Request
+        if: steps.validate.outcome == 'success'
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "chore: add firewall rules for ${{ env.REQID }} (issue #${{ github.event.issue.number }})"
+          branch: "firewall/${{ env.REQID }}"
+          base: ${{ github.ref }}
+          title: "${{ env.REQID }} – Firewall Rule Request"
+          body: |
+            This pull request adds firewall rules for request **${{ env.REQID }}**, generated automatically from issue #${{ github.event.issue.number }}.
+
+            **Summary of changes**: `${{ env.RULE_SUMMARY }}`
+
+            The rules are defined in the generated Terraform vars file: `firewall-requests/${{ env.REQID }}.auto.tfvars.json`.
+
+            Please review the new firewall configuration and merge this PR if it looks correct.
