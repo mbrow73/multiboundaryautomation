@@ -157,7 +157,9 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
+            // Use context.repo (owner & repo) so the API call is correctly scoped
             github.rest.issues.createComment({
+              ...context.repo,
               issue_number: context.issue.number,
               body: `:robot: PR [#${{ steps.cpr.outputs.pull-request-number }}](${{ steps.cpr.outputs.pull-request-url }}) created for NetSec review.`
-            })
+            });
