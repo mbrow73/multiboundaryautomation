@@ -226,19 +226,20 @@ def main():
             continue
         file = file_map[rule_name]
         updates_by_file.setdefault(file, []).append(update)
-    # Build proposed changes for each file and only apply them if there are no errors.
+    # Build proposed changes for each file.  We will update rules in place
+    # rather than removing them from the original file.  Each file will be
+    # rewritten with its updated and unchanged rules together.  We do not
+    # create a new request file for updates; instead the rule name itself
+    # is updated to reflect the new request ID.
     files_to_update: dict = {}
-    updated_rules_global: list = []
     changed_files = set()
-
-    # Stage updates: collect remaining and updated rules without writing files
     for file, update_list in updates_by_file.items():
         with open(file) as f:
             file_data = json.load(f)
         orig_rules = file_data.get("auto_firewall_rules", [])
-        remaining_rules: list = []
-        updated_rules: list = []
+        new_rules: list = []
         for idx, rule in enumerate(orig_rules, 1):
+            # Check if this rule should be updated
             if rule["name"] in {u["rule_name"] for u in update_list}:
                 update = next(u for u in update_list if u["rule_name"] == rule["name"])
                 new_fields = {}
@@ -257,60 +258,36 @@ def main():
                 new_carid = update["carid"]
                 to_update = rule.copy()
                 to_update["_update_index"] = idx
+                # Update the rule fields and name to include the new request ID
                 updated_rule = update_rule_fields(to_update, new_fields, new_reqid, new_carid)
                 rule_errors = validate_rule(updated_rule, idx=update["idx"])
                 if rule_errors:
                     errors.extend(rule_errors)
-                updated_rules.append(updated_rule)
-                summaries.append(make_update_summary(update["idx"], rule["name"], rule, update, updated_rule))
+                new_rules.append(updated_rule)
+                summaries.append(
+                    make_update_summary(update["idx"], rule["name"], rule, update, updated_rule)
+                )
             else:
-                remaining_rules.append(rule)
-        files_to_update[file] = (remaining_rules, updated_rules)
+                new_rules.append(rule)
+        files_to_update[file] = new_rules
 
-    # If no validation errors were collected, apply the staged changes
+    # If no validation errors, write back all updated files in place
     if not errors:
-        def clean_rules(rules_list):
-            cleaned_list = []
+        for file, rules_list in files_to_update.items():
+            # Clean helper fields and remove empty values
+            cleaned = []
             for r in rules_list:
                 r.pop("_update_index", None)
                 r["src_ip_ranges"] = [ip for ip in r.get("src_ip_ranges", []) if ip]
                 r["dest_ip_ranges"] = [ip for ip in r.get("dest_ip_ranges", []) if ip]
                 r["ports"] = [p for p in r.get("ports", []) if p]
-                cleaned_list.append(r)
-            return cleaned_list
-        # Apply modifications per file
-        for file, (remaining_rules, updated_rules) in files_to_update.items():
-            # accumulate updated rules for global file
-            updated_rules_global.extend(updated_rules)
-            if remaining_rules:
-                tmp_orig = file + ".tmp"
-                with open(tmp_orig, "w") as of:
-                    json.dump({"auto_firewall_rules": clean_rules(remaining_rules)}, of, indent=2)
-                    of.write("\n")
-                os.replace(tmp_orig, file)
-                changed_files.add(file)
-            else:
-                if os.path.exists(file):
-                    os.remove(file)
-        # Write out the new request file containing all updated rules
-        if updated_rules_global:
-            def clean_global(rules_list):
-                cleaned_list = []
-                for r in rules_list:
-                    r.pop("_update_index", None)
-                    r["src_ip_ranges"] = [ip for ip in r.get("src_ip_ranges", []) if ip]
-                    r["dest_ip_ranges"] = [ip for ip in r.get("dest_ip_ranges", []) if ip]
-                    r["ports"] = [p for p in r.get("ports", []) if p]
-                    cleaned_list.append(r)
-                return cleaned_list
-            new_filename = f"{new_reqid}.auto.tfvars.json"
-            new_path = os.path.join("firewall-requests", new_filename)
-            tmp_path = new_path + ".tmp"
-            with open(tmp_path, "w") as nf:
-                json.dump({"auto_firewall_rules": clean_global(updated_rules_global)}, nf, indent=2)
-                nf.write("\n")
-            os.replace(tmp_path, new_path)
-            changed_files.add(new_path)
+                cleaned.append(r)
+            tmp_file = file + ".tmp"
+            with open(tmp_file, "w") as of:
+                json.dump({"auto_firewall_rules": cleaned}, of, indent=2)
+                of.write("\n")
+            os.replace(tmp_file, file)
+            changed_files.add(file)
 
     # write summary file if no errors occurred
     if not errors:
