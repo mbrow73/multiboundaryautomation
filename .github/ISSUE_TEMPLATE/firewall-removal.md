@@ -1,14 +1,15 @@
 ---
-name: Remove Firewall Rule
-about: Remove an existing firewall rule
-title: "Remove firewall rule"
-labels: [firewall-removal]
+name: "Firewall Rule Removal Request"
+about: "Request removal of existing GCP firewall rules"
+labels: ["firewall-remove-request"]
 ---
 
-**REQ ID**
+### Request ID (REQID) for this removal: REQ1234567
 
-Enter the request identifier of the firewall rule you wish to remove.
+<!-- For each rule you want to remove, copy/paste the block below -->
 
-**Reason for removal**
+#### Rule 1
+**Current Rule Name**: AUTO-REQxxxxxxx-xxxxxxxxx-TCP-443-1
 
-Provide a brief justification for why this firewall rule is no longer needed.
+#### Rule 2
+**Current Rule Name**: AUTO-REQxxxxxxx-xxxxxxxxx-TCP-8443-2

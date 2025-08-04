@@ -1,39 +1,24 @@
 ---
-name: Firewall Rule Request
-about: Request a new firewall rule
-title: "CARXXXX-REQXXXX: Add firewall rule"
-labels: [firewall-request]
+name: "Firewall Rule Request"
+about: "Request new or updated GCP firewall rules"
+labels: ["firewall-request"]
 ---
 
-**CAR ID**
+### Request ID (REQID): REQ123123
+### CARID: 123123
 
-Provide the CAR (Change Approval Record) identifier associated with this request.
+#### Rule 1
+🔹 New Source IP(s) or CIDR(s): 203.0.113.55/32  
+🔹 New Destination IP(s) or CIDR(s): 10.1.2.22/32  
+🔹 New Port(s): 443  
+🔹 New Protocol: tcp  
+🔹 New Direction: INGRESS  
+🔹 New Business Justification: Need to restrict to a smaller range
 
-**REQ ID**
-
-Provide a unique request identifier for this firewall rule.  This will be used
-as the filename for the generated Terraform variables file.
-
-**New Source IP**
-
-Enter the source IP address or CIDR (e.g. `203.0.113.10/32`).
-
-**New Destination IP**
-
-Enter the destination IP address or CIDR (e.g. `10.0.0.0/24`).
-
-**Ports**
-
-Specify one or more ports or port ranges (e.g. `443` or `80,443`).
-
-**Protocol**
-
-Specify the protocol (e.g. `tcp`, `udp`, `icmp`).
-
-**Direction**
-
-Is this an `INGRESS` or `EGRESS` rule?
-
-**Justification**
-
-Provide a brief justification for why this firewall rule is needed.
+#### Rule 2
+🔹 New Source IP(s) or CIDR(s): 10.2.3.4/32  
+🔹 New Destination IP(s) or CIDR(s): 10.1.2.0/24  
+🔹 New Port(s): 8443  
+🔹 New Protocol: tcp  
+🔹 New Direction: EGRESS  
+🔹 New Business Justification: Another justification
