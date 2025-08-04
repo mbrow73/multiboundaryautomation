@@ -1,36 +1,26 @@
 ---
-name: "Update Firewall Rule(s)"
-about: "Request updates to one or more existing GCP firewall rules"
+name: "Firewall Rule Update"
+about: "Request updates to existing GCP firewall rules"
 labels: ["firewall-update-request"]
 ---
 
-<!-- 
-How to use:
-- For each rule you want to update, copy/paste the "#### Rule N" block below.
-- You MUST specify the exact current rule name (shown in PR summaries, in repository under firewall-requests directory, or in the gcp console).
-- Fill only the fields you want to update. Delete all lines that you do not need to update.
-- "New REQID" is required and will be used in the new rule name and filename for audit.
-- "New CARID" is optional, for transfering ownership of a rule to a different app/team.
+<!--
+Guidance for requesters:
+* Provide the Request ID (REQID) of the rule set you want to update and the CARID.
+* To update multiple rules within the same REQID, copy the “Rule X” section below and increment the number.
+* “Updated Source IP” and “Updated Destination IP” accept a single IP or CIDR; separate multiple entries with commas.
+* Leave a field blank if it should remain unchanged.
 -->
 
-### New Request ID (REQID): <!-- e.g. REQ2345678 -->
+### Request ID (REQID):
+### CARID:
 
 #### Rule 1
-**Current Rule Name**: <!-- e.g. AUTO-REQ1234567-123456789-TCP-443-1 -->
-**New Source IP(s) or CIDR(s)** (optional):  
-**New Destination IP(s) or CIDR(s)** (optional):  
-**New Port(s)** (optional):  
-**New Protocol** (optional):  
-**New Direction** (optional):  
-**New CARID** (optional):  
-**New Business Justification** (optional):  
+🔹 Updated Source IP:
+🔹 Updated Destination IP:
+🔹 Updated Port(s):
+🔹 Updated Protocol:
+🔹 Updated Direction:
+🔹 Updated Business Justification:
 
-#### Rule 2
-**Current Rule Name**:
-**New Source IP(s) or CIDR(s)** (optional):  
-**New Destination IP(s) or CIDR(s)** (optional):  
-**New Port(s)** (optional):  
-**New Protocol** (optional):  
-**New Direction** (optional):  
-**New CARID** (optional):  
-**New Business Justification** (optional):  
+<!-- Copy the Rule section above and increment the number for additional rules -->
