@@ -64,7 +64,13 @@ locals {
           {
             policy             = lower(r.dest_vpc) == "onprem" ? "intranet" : lower(r.dest_vpc)
             suffix             = "dest"
-            direction_override = r.direction
+            # Derive the direction for the destination side automatically.  For any
+            # cross‑boundary rule whose destination is on‑prem, traffic must leave
+            # the intranet towards on‑prem so we mark it as EGRESS.  Otherwise the
+            # destination is receiving traffic from another boundary, so mark it as
+            # INGRESS.  User‑supplied direction is ignored to support non‑directional
+            # requests.
+            direction_override = lower(r.dest_vpc) == "onprem" ? "EGRESS" : "INGRESS"
           }
         ],
         # include the source side (opposite direction) only if the policies differ
@@ -78,7 +84,9 @@ locals {
           {
             policy             = lower(r.src_vpc) == "onprem" ? "intranet" : lower(r.src_vpc)
             suffix             = "src"
-            direction_override = (upper(r.direction) == "INGRESS" ? "EGRESS" : "INGRESS")
+            # The source side always represents traffic leaving its boundary, so
+            # override the direction to EGRESS regardless of the original request.
+            direction_override = "EGRESS"
           }
         ] : []
       ) : {
@@ -118,16 +126,39 @@ resource "google_compute_network_firewall_policy_rule" "rule" {
   # that each boundary receives an appropriate ingress/egress rule.
   direction       = each.value.direction_override
 
-  # Derive action based on boundary logic (using original src_vpc/dest_vpc)
+  # Derive action based on boundary logic.  Only apply a security profile to the
+  # egress side of cross‑boundary connections.  Ingress rules (where
+  # direction_override == "INGRESS") are always allowed because traffic has
+  # already been inspected.  For connections involving on‑prem, inspection is
+  # applied only on the non‑intranet boundary; the intranet side remains an
+  # allow because the intranet→on‑prem leg should not be re‑inspected.
   action = (
     lower(each.value.src_vpc) != lower(each.value.dest_vpc) &&
-    !(lower(each.value.src_vpc) == "intranet" && lower(each.value.dest_vpc) == "onprem")
+    upper(each.value.direction_override) == "EGRESS" &&
+    !(
+      # Skip inspection on the dedicated intranet→on‑prem paths
+      (lower(each.value.src_vpc) == "intranet" && lower(each.value.dest_vpc) == "onprem") ||
+      (lower(each.value.src_vpc) == "onprem" && lower(each.value.dest_vpc) == "intranet") ||
+      # For any rule touching on‑prem, do not apply inspection on the intranet policy
+      (
+        (lower(each.value.src_vpc) == "onprem" || lower(each.value.dest_vpc) == "onprem") &&
+        each.value.target_policy == "intranet"
+      )
+    )
   ) ? "apply_security_profile_group" : "allow"
 
-  # Conditionally set the security profile group
+  # Conditionally set the security profile group using the same logic as above
   security_profile_group = (
     lower(each.value.src_vpc) != lower(each.value.dest_vpc) &&
-    !(lower(each.value.src_vpc) == "intranet" && lower(each.value.dest_vpc) == "onprem")
+    upper(each.value.direction_override) == "EGRESS" &&
+    !(
+      (lower(each.value.src_vpc) == "intranet" && lower(each.value.dest_vpc) == "onprem") ||
+      (lower(each.value.src_vpc) == "onprem" && lower(each.value.dest_vpc) == "intranet") ||
+      (
+        (lower(each.value.src_vpc) == "onprem" || lower(each.value.dest_vpc) == "onprem") &&
+        each.value.target_policy == "intranet"
+      )
+    )
   ) ? var.security_profile_group_id : null
 
   enable_logging = each.value.enable_logging
