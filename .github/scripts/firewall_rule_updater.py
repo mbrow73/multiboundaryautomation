@@ -287,20 +287,47 @@ def main():
         parts = to_update["name"].split("-")
         old_id = parts[1] if len(parts) > 1 else ""
 
-        # If no fields have been specified for update and the new REQID matches
-        # the existing request ID, treat this as an invalid update.  This
-        # prevents creating a PR when nothing actually changes.  (If the
-        # REQID differs, the rule will be moved to a new file even if the
-        # other fields are the same.)
-        if not any([
-            req["src_ip_ranges"],
-            req["dest_ip_ranges"],
-            req["ports"],
-            req["protocol"],
-            req["direction"],
-            req["carid"],
-            req["description"],
-        ]) and new_reqid == old_id:
+        # Determine if any actual field values will change.  If the user
+        # provided a new value and it differs from the current rule, it's
+        # considered a change.  Fields that are left blank are ignored.  If no
+        # fields change and the new REQID matches the old request ID, this
+        # update is considered a no‑op and will be rejected to avoid a
+        # meaningless PR.  (When the REQID differs, moving the rule to a new
+        # request file is still meaningful even if other fields stay the same.)
+        actual_change = False
+        # Compare src_ip_ranges
+        if req["src_ip_ranges"]:
+            if req["src_ip_ranges"] != to_update.get("src_ip_ranges", []):
+                actual_change = True
+        # Compare dest_ip_ranges
+        if req["dest_ip_ranges"]:
+            if req["dest_ip_ranges"] != to_update.get("dest_ip_ranges", []):
+                actual_change = True
+        # Compare ports
+        if req["ports"]:
+            if req["ports"] != to_update.get("ports", []):
+                actual_change = True
+        # Compare protocol
+        if req["protocol"]:
+            if req["protocol"].lower() != to_update.get("protocol", "").lower():
+                actual_change = True
+        # Compare direction
+        if req["direction"]:
+            if req["direction"].upper() != to_update.get("direction", "").upper():
+                actual_change = True
+        # Compare carid
+        if req["carid"]:
+            # Old carid is in the rule name (third dash‑separated token)
+            old_carid = to_update.get("name", "AUTO-REQ-0-0").split("-")[2] if '-' in to_update.get("name", "") else ""
+            if req["carid"] != old_carid:
+                actual_change = True
+        # Compare description/justification
+        if req["description"]:
+            # Only compare the justification portion (text after '|').  If equal, not a change.
+            old_desc_just = to_update.get("description", "").split("|", 1)[-1].strip()
+            if req["description"].strip() != old_desc_just:
+                actual_change = True
+        if not actual_change and new_reqid == old_id:
             errors.append(
                 f"Rule {idx}: No fields were changed; update request must modify at least one field."
             )
