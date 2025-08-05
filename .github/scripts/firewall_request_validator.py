@@ -35,11 +35,26 @@ import json
 from collections import defaultdict
 from typing import Dict, List
 
-# Public ranges allowed for oversized CIDRs (/24 or larger)
+# Public ranges allowed for oversized CIDRs (/24 or larger).  These
+# lists are also used to enforce health‑check and restricted API
+# positioning rules (see below).  Health‑check ranges must appear
+# exclusively on the source side of a rule; restricted API ranges
+# must appear exclusively on the destination side.
 ALLOWED_PUBLIC_RANGES = [
     ipaddress.ip_network("35.191.0.0/16"),    # GCP health‑check
     ipaddress.ip_network("130.211.0.0/22"),   # GCP health‑check
     ipaddress.ip_network("199.36.153.4/30"),  # restricted googleapis
+]
+
+# Explicit lists for health‑check and restricted API ranges.  These
+# mirror those used in the updater and boundary mapper.  They are
+# defined separately here to simplify checks.
+HEALTH_CHECK_RANGES = [
+    ipaddress.ip_network("35.191.0.0/16"),
+    ipaddress.ip_network("130.211.0.0/22"),
+]
+RESTRICTED_API_RANGES = [
+    ipaddress.ip_network("199.36.153.4/30"),
 ]
 
 def validate_reqid(reqid: str) -> bool:
@@ -199,10 +214,18 @@ def main() -> None:
         # Protocol
         if proto != proto.lower() or proto not in {"tcp", "udp", "icmp", "sctp"}:
             errors.append(f"❌ Rule {idx}: Protocol must be one of tcp, udp, icmp, sctp (lowercase).")
-        # IP/CIDR checks
+        # IP/CIDR checks and health‑check/restricted positioning
+        # Flags to detect health‑check and restricted API occurrences on
+        # each side.  These will be used to enforce that health‑check
+        # ranges appear only on the source side and restricted API
+        # ranges only on the destination side.
+        src_contains_restricted = False
+        dst_contains_health = False
         for label, val in [("source", src), ("destination", dst)]:
             for ip_str in val.split(","):
                 ip_str = ip_str.strip()
+                if not ip_str:
+                    continue
                 if "/" not in ip_str:
                     errors.append(f"❌ Rule {idx}: {label.capitalize()} '{ip_str}' must include a CIDR mask (e.g. /32).")
                     continue
@@ -221,12 +244,26 @@ def main() -> None:
                         errors.append(
                             f"❌ Rule {idx}: {label.capitalize()} '{ip_str}' is /{net.prefixlen}, must be /24 or smaller unless it’s a GCP health‑check range."
                         )
+                    # Do not perform further checks on this oversized IP (public oversized ranges allowed as exception)
                     continue
                 # Public ranges must be within allowed ranges
                 if not net.is_private:
                     if not any(net.subnet_of(rng) for rng in ALLOWED_PUBLIC_RANGES):
                         errors.append(f"❌ Rule {idx}: Public {label} '{ip_str}' not in allowed GCP ranges.")
                     continue
+                # Track occurrences of restricted API and health‑check ranges
+                if any(net.subnet_of(rng) for rng in RESTRICTED_API_RANGES):
+                    if label == "source":
+                        src_contains_restricted = True
+                if any(net.subnet_of(rng) for rng in HEALTH_CHECK_RANGES):
+                    if label == "destination":
+                        dst_contains_health = True
+        # If restricted API range found on the source side, that's invalid
+        if src_contains_restricted:
+            errors.append(f"❌ Rule {idx}: Restricted Google APIs ranges (199.36.153.4/30) may only appear on the destination side.")
+        # If health‑check range found on the destination side, that's invalid
+        if dst_contains_health:
+            errors.append(f"❌ Rule {idx}: Health‑check ranges (35.191.0.0/16, 130.211.0.0/22) may only appear on the source side.")
         # Port checks
         for p in ports.split(","):
             p = p.strip()
