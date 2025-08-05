@@ -4,8 +4,8 @@ Firewall Request Validator
 =========================
 
 This script validates new firewall rule **addition** requests.  It is
-invoked by the GitHub Actions workflow before a new `.auto.tfvars.json` file
-is generated.  The validator ensures that:
+invoked by the GitHub Actions workflow before a new `.auto.tfvars.json`
+file is generated.  The validator ensures that:
 
 * A request ID (REQID) and CARID are present and correctly formatted.
 * Each `#### Rule` block includes all required fields (source IPs,
@@ -57,11 +57,14 @@ RESTRICTED_API_RANGES = [
     ipaddress.ip_network("199.36.153.4/30"),
 ]
 
+
 def validate_reqid(reqid: str) -> bool:
     return bool(re.fullmatch(r"REQ\d{7,8}", reqid or ""))
 
+
 def validate_carid(carid: str) -> bool:
     return bool(re.fullmatch(r"\d{9}", carid or ""))
+
 
 def validate_port(port: str) -> bool:
     if re.fullmatch(r"\d{1,5}", port or ""):
@@ -71,6 +74,7 @@ def validate_port(port: str) -> bool:
         a, b = map(int, port.split('-'))
         return 1 <= a <= b <= 65535
     return False
+
 
 def parse_rule_block(block: str) -> Dict[str, str]:
     """Extract fields from a rule block in the issue body.
@@ -102,6 +106,7 @@ def parse_rule_block(block: str) -> Dict[str, str]:
         "dst_vpc": dst_vpc,
     }
 
+
 def parse_existing_rules() -> List[Dict[str, str]]:
     """Load existing auto firewall rules from JSON files into a list of summary dicts."""
     rules: List[Dict[str, str]] = []
@@ -121,6 +126,7 @@ def parse_existing_rules() -> List[Dict[str, str]]:
                 "dst_vpc":   r.get("dest_vpc", ""),
             })
     return rules
+
 
 def rule_exact_match(rule: Dict[str, str], rulelist: List[Dict[str, str]]) -> bool:
     """Return True if rule exactly matches any existing rule."""
@@ -142,6 +148,7 @@ def rule_exact_match(rule: Dict[str, str], rulelist: List[Dict[str, str]]) -> bo
             return True
     return False
 
+
 def rule_is_redundant(rule: Dict[str, str], rulelist: List[Dict[str, str]]) -> bool:
     """Return True if rule is a subset of an existing broader rule."""
     def subset(child: str, parent: str) -> bool:
@@ -151,6 +158,7 @@ def rule_is_redundant(rule: Dict[str, str], rulelist: List[Dict[str, str]]) -> b
             )
         except Exception:
             return False
+
     for r in rulelist:
         # Protocol and direction must match
         if rule["direction"] != r["direction"]:
@@ -171,12 +179,13 @@ def rule_is_redundant(rule: Dict[str, str], rulelist: List[Dict[str, str]]) -> b
         ports_child = set(int(p) for p in rule["ports"].split(","))
         ports_parent= set(int(p) for p in r["ports"].split(","))
         if (
-            all(any(subset(c, p) for p in srcs_parent) for c in srcs_child)
-            and all(any(subset(c, p) for p in dsts_parent) for c in dsts_child)
-            and ports_child.issubset(ports_parent)
+            all(any(subset(c, p) for p in srcs_parent) for c in srcs_child) and
+            all(any(subset(c, p) for p in dsts_parent) for c in dsts_child) and
+            ports_child.issubset(ports_parent)
         ):
             return True
     return False
+
 
 def print_errors(errs: List[str]) -> None:
     print("VALIDATION_ERRORS_START")
@@ -184,6 +193,7 @@ def print_errors(errs: List[str]) -> None:
         print(e)
     print("VALIDATION_ERRORS_END")
     sys.exit(1)
+
 
 def main() -> None:
     # Read issue body from the file specified on the command line
@@ -246,12 +256,19 @@ def main() -> None:
                         )
                     # Do not perform further checks on this oversized IP (public oversized ranges allowed as exception)
                     continue
-                # Public ranges must be within allowed ranges
+                # Public ranges must be within allowed ranges.  Even if the IP is public,
+                # we still need to check whether it belongs to a special range (health‑check
+                # or restricted API).  Do not skip; record an error if the public IP is
+                # not within the allowed ranges, then fall through to the special CIDR checks.
                 if not net.is_private:
                     if not any(net.subnet_of(rng) for rng in ALLOWED_PUBLIC_RANGES):
-                        errors.append(f"❌ Rule {idx}: Public {label} '{ip_str}' not in allowed GCP ranges.")
-                    continue
-                # Track occurrences of restricted API and health‑check ranges
+                        errors.append(
+                            f"❌ Rule {idx}: Public {label.capitalize()} '{ip_str}' not in allowed GCP ranges."
+                        )
+                    # Note: no 'continue' here. We fall through to special CIDR checks.
+
+                # Track occurrences of restricted API and health‑check ranges on both
+                # public and private IPs.
                 if any(net.subnet_of(rng) for rng in RESTRICTED_API_RANGES):
                     if label == "source":
                         src_contains_restricted = True
@@ -274,7 +291,7 @@ def main() -> None:
         if key in seen:
             errors.append(f"❌ Rule {idx}: Duplicate rule in request.")
         seen.add(key)
-    # Global duplicates/redundancy
+    # Global duplicate/redundancy checks
     existing = parse_existing_rules()
     for idx, blk in enumerate(blocks, 1):
         r = parse_rule_block(blk)
@@ -288,6 +305,7 @@ def main() -> None:
     # Print and exit if errors
     if errors:
         print_errors(errors)
+
 
 if __name__ == "__main__":
     main()
