@@ -286,6 +286,26 @@ def main():
         # Capture old request ID from original name
         parts = to_update["name"].split("-")
         old_id = parts[1] if len(parts) > 1 else ""
+
+        # If no fields have been specified for update and the new REQID matches
+        # the existing request ID, treat this as an invalid update.  This
+        # prevents creating a PR when nothing actually changes.  (If the
+        # REQID differs, the rule will be moved to a new file even if the
+        # other fields are the same.)
+        if not any([
+            req["src_ip_ranges"],
+            req["dest_ip_ranges"],
+            req["ports"],
+            req["protocol"],
+            req["direction"],
+            req["carid"],
+            req["description"],
+        ]) and new_reqid == old_id:
+            errors.append(
+                f"Rule {idx}: No fields were changed; update request must modify at least one field."
+            )
+            files_to_update[file] = (remaining, updated_list)
+            continue
         updated_rule = update_rule_fields(to_update, new_fields, new_reqid, new_carid)
         errs = validate_rule(updated_rule, idx)
         if errs:
