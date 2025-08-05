@@ -45,10 +45,27 @@ import json
 import ipaddress
 from typing import Dict, List, Tuple, Any
 
-# Allowed public ranges for oversized CIDRs
+# Allowed public ranges for oversized CIDRs.  These are a superset of the
+# health‑check and restricted API ranges and permit broader prefixes when
+# needed.  Requests containing /24 or larger CIDRs must fall within one of
+# these ranges.
 ALLOWED_PUBLIC_RANGES = [
+    ipaddress.ip_network("35.191.0.0/16"),    # GCP health‑check
+    ipaddress.ip_network("130.211.0.0/22"),   # GCP health‑check
+    ipaddress.ip_network("199.36.153.4/30"),  # restricted googleapis
+]
+
+# Explicit lists for health‑check and restricted API ranges.  These mirror
+# those used in the create‑request validator and boundary mapper.  They
+# are defined separately here so that update requests can be validated
+# consistently.  Health‑check ranges must appear exclusively on the
+# source side of a rule; restricted API ranges must appear exclusively
+# on the destination side.
+HEALTH_CHECK_RANGES = [
     ipaddress.ip_network("35.191.0.0/16"),
     ipaddress.ip_network("130.211.0.0/22"),
+]
+RESTRICTED_API_RANGES = [
     ipaddress.ip_network("199.36.153.4/30"),
 ]
 
@@ -164,6 +181,39 @@ def validate_rule(rule: Dict[str, Any], idx: int) -> List[str]:
         carid = ""
     if not validate_carid(carid):
         errors.append(f"Rule {idx}: CARID must be 9 digits. Found: '{carid}'.")
+
+    # Enforce special positioning rules for well‑known public ranges.  The
+    # restricted googleapis VIP (199.36.153.4/30) may only appear on the
+    # destination side of a rule, while the GCP health‑check CIDRs
+    # (35.191.0.0/16 and 130.211.0.0/22) may only appear on the source side.
+    try:
+        # Check if any source IP falls within the restricted API range
+        src_contains_restricted = False
+        for ip in rule.get("src_ip_ranges", []):
+            if "/" in ip:
+                net = ipaddress.ip_network(ip, strict=False)
+                if any(net.subnet_of(r) for r in RESTRICTED_API_RANGES):
+                    src_contains_restricted = True
+                    break
+        if src_contains_restricted:
+            errors.append(
+                f"Rule {idx}: Restricted Google APIs ranges (199.36.153.4/30) may only appear on the destination side."
+            )
+        # Check if any destination IP falls within the health‑check range
+        dst_contains_health = False
+        for ip in rule.get("dest_ip_ranges", []):
+            if "/" in ip:
+                net = ipaddress.ip_network(ip, strict=False)
+                if any(net.subnet_of(r) for r in HEALTH_CHECK_RANGES):
+                    dst_contains_health = True
+                    break
+        if dst_contains_health:
+            errors.append(
+                f"Rule {idx}: Health‑check ranges (35.191.0.0/16, 130.211.0.0/22) may only appear on the source side."
+            )
+    except Exception:
+        # Ignore exceptions here; IP format errors are already captured above
+        pass
     return errors
 
 

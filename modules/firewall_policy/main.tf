@@ -20,7 +20,15 @@
  * `policy_name` with the boundary key.
  */
 resource "google_compute_network_firewall_policy" "policies" {
-  for_each    = var.vpc_boundaries
+  # Only create a policy for real cloud VPC boundaries.  The "onprem"
+  # boundary acts as a fake boundary in the rule expansion logic and
+  # should not have a dedicated network firewall policy.  Filter it
+  # out of the for_each map so Terraform does not attempt to create a
+  # policy for it.  We use a comprehension to exclude keys equal to
+  # "onprem" (case-insensitive).
+  for_each = {
+    for k, v in var.vpc_boundaries : k => v if lower(k) != "onprem"
+  }
   name        = "${var.policy_name}-${each.key}"
   project     = var.project_id
   description = "NGFW firewall policy for ${each.key}"
@@ -32,8 +40,13 @@ resource "google_compute_network_firewall_policy" "policies" {
  * `vpc_boundaries`.
  */
 resource "google_compute_network_firewall_policy_association" "attach" {
-  for_each         = var.vpc_boundaries
-  name             = each.key
+  # Attach the policy only for cloud VPC boundaries.  See above for
+  # rationale: we exclude the on‑prem boundary from attachments.  We
+  # mirror the same filtering logic used for the policy resource.
+  for_each = {
+    for k, v in var.vpc_boundaries : k => v if lower(k) != "onprem"
+  }
+  name              = each.key
   attachment_target = each.value
   firewall_policy   = google_compute_network_firewall_policy.policies[each.key].id
 }
@@ -63,13 +76,27 @@ locals {
           {
             policy             = lower(r.dest_vpc) == "onprem" ? "intranet" : lower(r.dest_vpc)
             suffix             = "dest"
-            # Derive the direction for the destination side automatically.  For any
-            # cross‑boundary rule whose destination is on‑prem, traffic must leave
-            # the intranet towards on‑prem so we mark it as EGRESS.  Otherwise the
-            # destination is receiving traffic from another boundary, so mark it as
-            # INGRESS.  User‑supplied direction is ignored to support non‑directional
-            # requests.
-            direction_override = lower(r.dest_vpc) == "onprem" ? "EGRESS" : "INGRESS"
+            # Derive the direction for the destination side automatically.
+            #
+            # Normal cross‑boundary rules: when the destination boundary differs
+            # from the source, the destination side represents inbound traffic
+            # (INGRESS), except when the destination is on‑prem.  When the
+            # destination is on‑prem the traffic leaves the intranet hub, so
+            # the direction becomes EGRESS.
+            #
+            # Special cases for restricted API and health‑check ranges:
+            # boundary_mapper.py sets r.src_vpc and r.dest_vpc to the same
+            # boundary and populates r.direction with either "INGRESS" or
+            # "EGRESS".  When src_vpc == dest_vpc, we preserve the caller‑
+            # specified direction (upper‑cased) instead of defaulting to
+            # INGRESS.  This yields a single rule on that boundary with the
+            # appropriate direction (ingress for health‑checks, egress for
+            # restricted API calls).
+            direction_override = lower(r.dest_vpc) == "onprem" ? "EGRESS" : (
+              lower(r.dest_vpc) == lower(r.src_vpc) ? (
+                trimspace(r.direction) != "" ? upper(r.direction) : "INGRESS"
+              ) : "INGRESS"
+            )
           }
         ],
         # include the source side (opposite direction) only if the policies differ
@@ -89,10 +116,10 @@ locals {
           }
         ] : []
       ) : {
-        key               = "${r.name}-${entry.policy}-${entry.suffix}"
-        rule              = r
-        target_policy     = entry.policy
-        direction_override= entry.direction_override
+        key                = "${r.name}-${entry.policy}-${entry.suffix}"
+        rule               = r
+        target_policy      = entry.policy
+        direction_override = entry.direction_override
       }
     ]
   ])
@@ -102,8 +129,8 @@ locals {
     for obj in local.expanded_rules : obj.key => merge(
       obj.rule,
       {
-        target_policy     = obj.target_policy,
-        direction_override= obj.direction_override
+        target_policy      = obj.target_policy,
+        direction_override = obj.direction_override
       }
     )
   }
