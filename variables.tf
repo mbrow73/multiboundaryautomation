@@ -7,7 +7,7 @@ variable "project_id" {
 variable "vpc_network_id" {
   description = "The default VPC network (self‑link or ID) used when no explicit boundaries are supplied"
   type        = string
-  default     = ""
+  default     = "projects/dummy-project/global/networks/onprem"
 }
 
 variable "zone" {
