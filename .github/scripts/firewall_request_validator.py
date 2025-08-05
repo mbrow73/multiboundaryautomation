@@ -77,13 +77,7 @@ def validate_port(port: str) -> bool:
 
 
 def parse_rule_block(block: str) -> Dict[str, str]:
-    """Extract fields from a rule block in the issue body.
-
-    The request template may include explicit boundary fields
-    (Source VPC/Destination VPC).  To avoid misinterpreting VPC names as
-    IP/CIDR values, we look for specific labels.  If the newer labels
-    are absent, we fall back to older generic patterns.
-    """
+    """Extract fields from a rule block in the issue body."""
     def extract(label: str) -> str:
         m = re.search(rf"{label}.*?:\s*(.+)", block, re.IGNORECASE)
         return m.group(1).strip() if m else ""
@@ -138,7 +132,6 @@ def rule_exact_match(rule: Dict[str, str], rulelist: List[Dict[str, str]]) -> bo
             and rule["proto"] == r["proto"]
             and rule["direction"] == r["direction"]
         ):
-            # If either has boundaries, require exact match of boundaries
             if (rule.get("src_vpc") or r.get("src_vpc")):
                 if rule.get("src_vpc", "") != r.get("src_vpc", ""):
                     continue
@@ -160,12 +153,10 @@ def rule_is_redundant(rule: Dict[str, str], rulelist: List[Dict[str, str]]) -> b
             return False
 
     for r in rulelist:
-        # Protocol and direction must match
         if rule["direction"] != r["direction"]:
             continue
         if rule["proto"] != r["proto"]:
             continue
-        # Only compare redundancy within the same boundaries
         if rule.get("src_vpc") or r.get("src_vpc"):
             if rule.get("src_vpc", "") != r.get("src_vpc", ""):
                 continue
@@ -196,20 +187,16 @@ def print_errors(errs: List[str]) -> None:
 
 
 def main() -> None:
-    # Read issue body from the file specified on the command line
     issue = open(sys.argv[1]).read()
     errors: List[str] = []
-    # Extract REQID
     m = re.search(r"Request ID.*?:\s*([A-Z0-9]+)", issue, re.IGNORECASE)
     reqid = m.group(1).strip() if m else None
     if not reqid or not validate_reqid(reqid):
         errors.append(f"❌ REQID must be 'REQ' followed by 7–8 digits. Found: '{reqid}'")
-    # Extract CARID
     m = re.search(r"CARID.*?:\s*(\d+)", issue, re.IGNORECASE)
     carid = m.group(1).strip() if m else None
     if not carid or not validate_carid(carid):
         errors.append(f"❌ CARID must be exactly 9 digits. Found: '{carid}'")
-    # Split into rule blocks
     blocks = re.split(r"#### Rule", issue, flags=re.IGNORECASE)[1:]
     seen: set = set()
     for idx, blk in enumerate(blocks, 1):
@@ -217,18 +204,11 @@ def main() -> None:
         src, dst, ports, proto, direction, just = (
             r["src"], r["dst"], r["ports"], r["proto"], r["direction"], r["just"]
         )
-        # Required fields present?  Direction is optional
         if not all([src, dst, ports, proto, just]):
             errors.append(f"❌ Rule {idx}: All fields (source, destination, port, protocol, justification) must be present.")
             continue
-        # Protocol
         if proto != proto.lower() or proto not in {"tcp", "udp", "icmp", "sctp"}:
             errors.append(f"❌ Rule {idx}: Protocol must be one of tcp, udp, icmp, sctp (lowercase).")
-        # IP/CIDR checks and health‑check/restricted positioning
-        # Flags to detect health‑check and restricted API occurrences on
-        # each side.  These will be used to enforce that health‑check
-        # ranges appear only on the source side and restricted API
-        # ranges only on the destination side.
         src_contains_restricted = False
         dst_contains_health = False
         for label, val in [("source", src), ("destination", dst)]:
@@ -244,65 +224,59 @@ def main() -> None:
                 except Exception:
                     errors.append(f"❌ Rule {idx}: Invalid {label} IP/CIDR '{ip_str}'.")
                     continue
-                # Disallow 0.0.0.0/0
                 if net == ipaddress.ip_network("0.0.0.0/0"):
                     errors.append(f"❌ Rule {idx}: {label.capitalize()} may not be 0.0.0.0/0.")
                     continue
-                # Oversized CIDR must be within allowed public ranges
+                # Oversized CIDR: record special ranges before skipping further checks
                 if net.prefixlen < 24:
                     if not any(net.subnet_of(rng) for rng in ALLOWED_PUBLIC_RANGES):
                         errors.append(
                             f"❌ Rule {idx}: {label.capitalize()} '{ip_str}' is /{net.prefixlen}, must be /24 or smaller unless it’s a GCP health‑check range."
                         )
-                    # Do not perform further checks on this oversized IP (public oversized ranges allowed as exception)
+                    # Track special ranges on oversized CIDRs
+                    if any(net.subnet_of(rng) for rng in RESTRICTED_API_RANGES):
+                        if label == "source":
+                            src_contains_restricted = True
+                    if any(net.subnet_of(rng) for rng in HEALTH_CHECK_RANGES):
+                        if label == "destination":
+                            dst_contains_health = True
                     continue
-                # Public ranges must be within allowed ranges.  Even if the IP is public,
-                # we still need to check whether it belongs to a special range (health‑check
-                # or restricted API).  Do not skip; record an error if the public IP is
-                # not within the allowed ranges, then fall through to the special CIDR checks.
+                # Public CIDR
                 if not net.is_private:
                     if not any(net.subnet_of(rng) for rng in ALLOWED_PUBLIC_RANGES):
                         errors.append(
                             f"❌ Rule {idx}: Public {label.capitalize()} '{ip_str}' not in allowed GCP ranges."
                         )
-                    # Note: no 'continue' here. We fall through to special CIDR checks.
+                    # Do not skip; fall through to special-range checks
 
-                # Track occurrences of restricted API and health‑check ranges on both
-                # public and private IPs.
+                # Track special ranges on all CIDRs
                 if any(net.subnet_of(rng) for rng in RESTRICTED_API_RANGES):
                     if label == "source":
                         src_contains_restricted = True
                 if any(net.subnet_of(rng) for rng in HEALTH_CHECK_RANGES):
                     if label == "destination":
                         dst_contains_health = True
-        # If restricted API range found on the source side, that's invalid
         if src_contains_restricted:
             errors.append(f"❌ Rule {idx}: Restricted Google APIs ranges (199.36.153.4/30) may only appear on the destination side.")
-        # If health‑check range found on the destination side, that's invalid
         if dst_contains_health:
             errors.append(f"❌ Rule {idx}: Health‑check ranges (35.191.0.0/16, 130.211.0.0/22) may only appear on the source side.")
-        # Port checks
         for p in ports.split(","):
             p = p.strip()
             if not validate_port(p):
                 errors.append(f"❌ Rule {idx}: Invalid port or range: '{p}'.")
-        # Duplicate within request
         key = (src, dst, ports, proto, direction)
         if key in seen:
             errors.append(f"❌ Rule {idx}: Duplicate rule in request.")
         seen.add(key)
-    # Global duplicate/redundancy checks
     existing = parse_existing_rules()
     for idx, blk in enumerate(blocks, 1):
         r = parse_rule_block(blk)
-        # Skip duplicate/redundancy checks if essential fields missing
         if not all([r["src"], r["dst"], r["ports"], r["proto"]]):
             continue
         if rule_exact_match(r, existing):
             errors.append(f"❌ Rule {idx}: Exact duplicate of existing rule.")
         elif rule_is_redundant(r, existing):
             errors.append(f"❌ Rule {idx}: Redundant—already covered by an existing broader rule.")
-    # Print and exit if errors
     if errors:
         print_errors(errors)
 
