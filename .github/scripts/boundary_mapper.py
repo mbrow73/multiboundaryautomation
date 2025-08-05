@@ -148,15 +148,19 @@ def update_tfvars_file(json_path: str, boundary_index: List[Tuple[ipaddress.IPv4
         # through the boundary map (which would fail) while still
         # preserving the destination boundary for policy evaluation.
         if src_ranges and ranges_in_list(src_ranges, HEALTH_CHECK_RANGES):
+            # All source IPs are in the health‑check list.  We assign
+            # both src_vpc and dest_vpc to the destination boundary.
             try:
-                dst_boundary = determine_boundary(dst_ranges, boundary_index, default_boundary)
+                dest_boundary = determine_boundary(dst_ranges, boundary_index, default_boundary)
             except Exception:
-                # If destination cannot be mapped and no default is
-                # provided, fall back to default_boundary (if any)
-                dst_boundary = default_boundary or "unknown"
-            rule["src_vpc"] = "health_check"
-            rule["dest_vpc"] = dst_boundary
-            # If direction is blank/missing, set to INGRESS
+                dest_boundary = default_boundary or "unknown"
+            # Use dest_boundary for both source and destination to avoid
+            # referencing a nonexistent boundary like "health_check" in
+            # downstream Terraform.  The firewall rule will still be
+            # direction=INGRESS and will target the dest boundary's
+            # policy only.
+            rule["src_vpc"] = dest_boundary
+            rule["dest_vpc"] = dest_boundary
             if not (rule.get("direction") or "").strip():
                 rule["direction"] = "INGRESS"
             continue
@@ -169,12 +173,14 @@ def update_tfvars_file(json_path: str, boundary_index: List[Tuple[ipaddress.IPv4
         # through the boundary map.  Direction is forced to EGRESS if
         # blank.
         if dst_ranges and ranges_in_list(dst_ranges, RESTRICTED_API_RANGES):
+            # All destination IPs are in the restricted API list.  We
+            # assign both src_vpc and dest_vpc to the source boundary.
             try:
                 src_boundary = determine_boundary(src_ranges, boundary_index, default_boundary)
             except Exception:
                 src_boundary = default_boundary or "unknown"
             rule["src_vpc"] = src_boundary
-            rule["dest_vpc"] = "restricted_api"
+            rule["dest_vpc"] = src_boundary
             if not (rule.get("direction") or "").strip():
                 rule["direction"] = "EGRESS"
             continue
