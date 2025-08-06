@@ -6,7 +6,7 @@ labels: ["firewall-update-request"]
 
 ### New Request ID (REQID):
 
-### New Third Party ID (optional):
+### New Third Party ID (required for third‑party VPC access):
 
 #### Rule 1
 **Current Rule Name**:

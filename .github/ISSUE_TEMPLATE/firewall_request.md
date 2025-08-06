@@ -5,8 +5,8 @@ labels: ["firewall-request"]
 ---
 
 ### Request ID (REQID): REQ123123
-### CARID: 123123
-### Third Party ID (TLM ID) (optional):
+### CARID: 123123456
+### Third Party ID (TLM ID) (required for third‑party VPC access):
 
 #### Rule 1
 🔹 New Source IP(s) or CIDR(s): 203.0.113.55/32  
@@ -21,4 +21,3 @@ labels: ["firewall-request"]
 🔹 New Port(s): 8443  
 🔹 New Protocol: tcp  
 🔹 New Business Justification: Another justification
-
