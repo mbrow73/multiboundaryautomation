@@ -33,12 +33,12 @@ from typing import Dict, List
 
 # Allowed public ranges for oversized CIDRs (/24 or larger).
 ALLOWED_PUBLIC_RANGES = [
-    ipaddress.ip_network("35.191.0.0/16"),    # GCP health‑check
-    ipaddress.ip_network("130.211.0.0/22"),   # GCP health‑check
-    ipaddress.ip_network("199.36.153.4/30"),  # restricted googleapis
+    ipaddress.ip_network("35.191.0.0/16"),
+    ipaddress.ip_network("130.211.0.0/22"),
+    ipaddress.ip_network("199.36.153.4/30"),
 ]
 
-# Explicit lists for special ranges
+# Special ranges
 HEALTH_CHECK_RANGES = [
     ipaddress.ip_network("35.191.0.0/16"),
     ipaddress.ip_network("130.211.0.0/22"),
@@ -47,14 +47,12 @@ RESTRICTED_API_RANGES = [
     ipaddress.ip_network("199.36.153.4/30"),
 ]
 
-# Define your third‑party‑peering boundary CIDRs here.
-# Replace the example with your actual third‑party peering ranges
+# Third‑party‑peering boundary CIDRs (edit to your actual ranges)
 THIRD_PARTY_PEERING_RANGES = [
     ipaddress.ip_network("10.150.1.0/24"),
-    # ipaddress.ip_network("10.150.1.0/24"),  # example of an RFC1918 third‑party range
 ]
 
-# Define private ranges explicitly (RFC1918).
+# RFC1918 private ranges
 PRIVATE_RANGES = [
     ipaddress.ip_network("10.0.0.0/8"),
     ipaddress.ip_network("172.16.0.0/12"),
@@ -116,9 +114,7 @@ def rule_is_redundant(rule: Dict[str, str], rulelist: List[Dict[str, str]]) -> b
             )
         except Exception:
             return False
-
     for r in rulelist:
-        # Protocol and direction must match
         if rule["direction"] != r["direction"]:
             continue
         if rule["proto"] != r["proto"]:
@@ -146,7 +142,7 @@ def parse_rule_block(block: str) -> Dict[str, str]:
     dst_ip = extract("New Destination IP") or extract("New Destination")
     ports   = extract("New Port")
     proto   = extract("New Protocol")
-    direction = extract("New Direction")  # parsed but not required
+    direction = extract("New Direction")
     just    = extract("New Business Justification")
     return {
         "src": src_ip,
@@ -171,8 +167,8 @@ def main() -> None:
     if not validate_carid(carid):
         errors.append(f"❌ CARID must be exactly 9 digits. Found: '{carid}'")
 
-    # Extract the TLM ID (Third Party ID) from the issue (optional)
-    m = re.search(r"Third Party ID.*?:\s*(.+)", issue, re.IGNORECASE)
+    # Extract the TLM ID (Third Party ID).  Allow text in parentheses after the label.
+    m = re.search(r"Third Party ID\b.*?:\s*(.*)", issue, re.IGNORECASE)
     tlm_id = m.group(1).strip() if m else ""
 
     # Split into rule blocks
@@ -191,10 +187,7 @@ def main() -> None:
         if proto != proto.lower() or proto not in {"tcp", "udp", "icmp", "sctp"}:
             errors.append(f"❌ Rule {idx}: Protocol must be one of tcp, udp, icmp, sctp (lowercase).")
 
-        # Flags for third‑party range usage
         uses_third_party = False
-
-        # Validate IP fields
         for label, val in [("source", src), ("destination", dst)]:
             for ip_str in val.split(","):
                 ip_str = ip_str.strip()
@@ -212,15 +205,18 @@ def main() -> None:
                     errors.append(f"❌ Rule {idx}: {label.capitalize()} may not be 0.0.0.0/0.")
                     continue
 
-                # Oversized CIDR check
+                # Oversized CIDR must be within allowed GCP ranges
                 if net.prefixlen < 24:
                     if not any(net.subnet_of(rng) for rng in ALLOWED_PUBLIC_RANGES):
                         errors.append(
                             f"❌ Rule {idx}: {label.capitalize()} '{ip_str}' is /{net.prefixlen}, must be /24 or smaller unless it’s a GCP health‑check range."
                         )
+                    # If it's oversized but in a third‑party range, still mark it
+                    if any(net.subnet_of(rng) for rng in THIRD_PARTY_PEERING_RANGES):
+                        uses_third_party = True
                     continue
 
-                # Determine if IP is public (not RFC1918)
+                # Public CIDR must be within allowed ranges
                 in_private = any(net.subnet_of(rng) for rng in PRIVATE_RANGES)
                 if not in_private:
                     if not any(net.subnet_of(rng) for rng in ALLOWED_PUBLIC_RANGES):
@@ -233,7 +229,7 @@ def main() -> None:
                 if any(net.subnet_of(rng) for rng in THIRD_PARTY_PEERING_RANGES):
                     uses_third_party = True
 
-        # If the rule uses the third‑party boundary but no TLM ID was provided
+        # Enforce TLM ID when third‑party boundary is used
         if uses_third_party and not tlm_id:
             errors.append(f"❌ Rule {idx}: A Third Party ID (TLM ID) must be specified when using the third‑party‑peering boundary.")
 
@@ -243,7 +239,7 @@ def main() -> None:
             if not validate_port(p):
                 errors.append(f"❌ Rule {idx}: Invalid port or range: '{p}'.")
 
-        # Duplicate detection within this request
+        # Duplicate detection
         key = (src, dst, ports, proto, direction)
         if key in seen:
             errors.append(f"❌ Rule {idx}: Duplicate rule in request.")

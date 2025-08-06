@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
 Firewall Rule Updater
----------------------
 
 This script is invoked by the GitHub Actions workflow that processes
 firewall rule **update** requests.  It reads the issue body to determine
@@ -17,24 +16,13 @@ results back.  It supports two key behaviours:
   2. **Move to new request** – If the new REQID differs from the one in
      the existing rule name, the updated rule is removed from its current
      file and appended to `firewall-requests/REQ<newid>.auto.tfvars.json`.
-     Remaining rules stay in their original file.  This preserves
-     concurrency: updates for different request IDs never write to the
-     same file, while updates for the same ID are kept together.
+     Remaining rules stay in their original file.
 
 The script stages all changes in memory and validates updated rules before
 touching the filesystem.  If any validation errors occur, it prints them
 and exits with non‑zero status.  After writing files, it invokes
-`boundary_mapper.py` on each changed file so that `src_vpc` and `dest_vpc`
-fields are automatically recalculated when IP ranges cross boundaries.
-
-Usage:
-    python3 firewall_rule_updater.py "<issue body>"
-    cat issue.txt | python3 firewall_rule_updater.py
-
-The issue body should contain a `New Request ID` field and one or more
-`Rule` sections specifying the current rule name and the fields to
-update (source/destination IPs, ports, protocol, direction, CARID and
-business justification).
+`boundary_mapper.py` on each changed file so that boundaries and directions
+are recalculated when IP ranges cross boundaries.
 """
 
 import re
@@ -45,17 +33,14 @@ import json
 import ipaddress
 from typing import Dict, List, Tuple, Any
 
-# Allowed public ranges for oversized CIDRs.  These are a superset of the
-# health‑check and restricted API ranges and permit broader prefixes when
-# needed.  Requests containing /24 or larger CIDRs must fall within one of
-# these ranges.
+# Allowed public ranges for oversized CIDRs (/24 or larger).
 ALLOWED_PUBLIC_RANGES = [
-    ipaddress.ip_network("35.191.0.0/16"),    # GCP health‑check
-    ipaddress.ip_network("130.211.0.0/22"),   # GCP health‑check
-    ipaddress.ip_network("199.36.153.4/30"),  # restricted googleapis
+    ipaddress.ip_network("35.191.0.0/16"),
+    ipaddress.ip_network("130.211.0.0/22"),
+    ipaddress.ip_network("199.36.153.4/30"),
 ]
 
-# Explicit lists for health‑check and restricted API ranges.
+# Special ranges
 HEALTH_CHECK_RANGES = [
     ipaddress.ip_network("35.191.0.0/16"),
     ipaddress.ip_network("130.211.0.0/22"),
@@ -64,20 +49,19 @@ RESTRICTED_API_RANGES = [
     ipaddress.ip_network("199.36.153.4/30"),
 ]
 
-# Private ranges for RFC1918
+# RFC1918 private ranges
 PRIVATE_RANGES = [
     ipaddress.ip_network("10.0.0.0/8"),
     ipaddress.ip_network("172.16.0.0/12"),
     ipaddress.ip_network("192.168.0.0/16"),
 ]
 
-# Third‑party‑peering boundary CIDRs (replace with actual ranges).
+# Third‑party‑peering boundary CIDRs (edit to your actual ranges)
 THIRD_PARTY_PEERING_RANGES = [
-    ipaddress.ip_network("203.0.113.0/24"),
-    # ipaddress.ip_network("10.150.1.0/24"),  # example of an RFC1918 third‑party range
+    ipaddress.ip_network("10.150.1.0/24"),
 ]
 
-# Global for the TLM ID (parsed in main).
+# Global TLM ID (set in main)
 NEW_TLM_ID = ""
 
 def validate_reqid(reqid: str) -> bool:
@@ -109,7 +93,6 @@ def validate_protocol(proto: str) -> bool:
     return proto.lower() in {"tcp", "udp", "icmp", "sctp"}
 
 def load_all_rules() -> Tuple[Dict[str, Dict[str, Any]], Dict[str, str]]:
-    """Load all rules from firewall-requests and return maps of name->rule and name->file path."""
     rule_map: Dict[str, Dict[str, Any]] = {}
     file_map: Dict[str, str] = {}
     for path in glob.glob("firewall-requests/*.auto.tfvars.json"):
@@ -123,7 +106,6 @@ def load_all_rules() -> Tuple[Dict[str, Dict[str, Any]], Dict[str, str]]:
     return rule_map, file_map
 
 def update_rule_fields(rule: Dict[str, Any], updates: Dict[str, Any], new_reqid: str, new_carid: str) -> Dict[str, Any]:
-    """Return an updated copy of the rule with new fields and regenerated name/description."""
     updated = rule.copy()
     idx = updated.get("_update_index", 1)
     proto = updates.get("protocol") or updated.get("protocol", "tcp")
@@ -131,19 +113,15 @@ def update_rule_fields(rule: Dict[str, Any], updates: Dict[str, Any], new_reqid:
     carid = new_carid or updated.get("name", "AUTO-REQ-0-0").split("-")[2]
     new_name = f"AUTO-{new_reqid}-{carid}-{proto.upper()}-{','.join(ports)}-{idx}"
     updated["name"] = new_name
-    # Apply field updates
     for key, value in updates.items():
         if value:
             updated[key] = value.lower() if key in {"protocol", "direction"} else value
-    # Update description
     desc_just = updates.get("description") or updated.get("description", "").split("|", 1)[-1]
     updated["description"] = f"{new_name} | {desc_just.strip()}"
     return updated
 
 def validate_rule(rule: Dict[str, Any], idx: int) -> List[str]:
-    """Validate a single firewall rule and return a list of errors (empty if valid)."""
     errors: List[str] = []
-    # IP validations
     for field in ["src_ip_ranges", "dest_ip_ranges"]:
         label = "Source" if field == "src_ip_ranges" else "Destination"
         for ip in rule.get(field, []):
@@ -160,85 +138,63 @@ def validate_rule(rule: Dict[str, Any], idx: int) -> List[str]:
             if net.prefixlen < 24:
                 if not any(net.subnet_of(r) for r in ALLOWED_PUBLIC_RANGES):
                     errors.append(f"Rule {idx}: {label} '{ip}' is /{net.prefixlen}, must be /24 or smaller unless it’s a GCP health‑check range.")
+                # mark third‑party even on oversized networks
+                if any(net.subnet_of(r) for r in THIRD_PARTY_PEERING_RANGES):
+                    rule["_uses_third_party"] = True
                 continue
             in_private = any(net.subnet_of(r) for r in PRIVATE_RANGES)
             if not in_private:
                 if not any(net.subnet_of(r) for r in ALLOWED_PUBLIC_RANGES):
                     errors.append(f"Rule {idx}: Public {label} '{ip}' not in allowed GCP ranges.")
                 continue
+            if any(net.subnet_of(r) for r in THIRD_PARTY_PEERING_RANGES):
+                rule["_uses_third_party"] = True
 
-    # Ports
     for p in rule.get("ports", []):
         if not validate_port(p):
             errors.append(f"Rule {idx}: Invalid port or range: '{p}'.")
-    # Protocol
     proto = rule.get("protocol", "").lower()
     if not validate_protocol(proto):
         errors.append(f"Rule {idx}: Protocol must be one of: tcp, udp, icmp, sctp (lowercase). Found: '{rule.get('protocol')}'.")
-    # Direction
     direction = rule.get("direction", "")
     if direction and direction.upper() not in {"INGRESS", "EGRESS"}:
         errors.append(f"Rule {idx}: Direction must be INGRESS or EGRESS when provided. Found: '{direction}'.")
-    # CARID
     try:
         carid = rule.get("name", "AUTO-REQ-0000000-0-0").split("-")[2]
     except Exception:
         carid = ""
     if not validate_carid(carid):
         errors.append(f"Rule {idx}: CARID must be 9 digits. Found: '{carid}'.")
-
-    # Enforce special positioning rules for well‑known public ranges.
     try:
-        # Restricted API may only be on dest side
-        src_contains_restricted = False
-        for ip in rule.get("src_ip_ranges", []):
-            if "/" in ip:
-                net = ipaddress.ip_network(ip, strict=False)
-                if any(net.subnet_of(r) for r in RESTRICTED_API_RANGES):
-                    src_contains_restricted = True
-                    break
+        src_contains_restricted = any(
+            ipaddress.ip_network(ip).subnet_of(r)
+            for ip in rule.get("src_ip_ranges", [])
+            for r in RESTRICTED_API_RANGES
+            if "/" in ip
+        )
         if src_contains_restricted:
             errors.append(
                 f"Rule {idx}: Restricted Google APIs ranges (199.36.153.4/30) may only appear on the destination side."
             )
-        # Health check may only be on src side
-        dst_contains_health = False
-        for ip in rule.get("dest_ip_ranges", []):
-            if "/" in ip:
-                net = ipaddress.ip_network(ip, strict=False)
-                if any(net.subnet_of(r) for r in HEALTH_CHECK_RANGES):
-                    dst_contains_health = True
-                    break
+        dst_contains_health = any(
+            ipaddress.ip_network(ip).subnet_of(r)
+            for ip in rule.get("dest_ip_ranges", [])
+            for r in HEALTH_CHECK_RANGES
+            if "/" in ip
+        )
         if dst_contains_health:
             errors.append(
                 f"Rule {idx}: Health‑check ranges (35.191.0.0/16, 130.211.0.0/22) may only appear on the source side."
             )
     except Exception:
         pass
-
-    # Enforce third‑party‑peering boundary: require NEW_TLM_ID
     try:
-        uses_third_party = False
-        for ip in rule.get("src_ip_ranges", []):
-            if "/" in ip:
-                net = ipaddress.ip_network(ip, strict=False)
-                if any(net.subnet_of(r) for r in THIRD_PARTY_PEERING_RANGES):
-                    uses_third_party = True
-                    break
-        if not uses_third_party:
-            for ip in rule.get("dest_ip_ranges", []):
-                if "/" in ip:
-                    net = ipaddress.ip_network(ip, strict=False)
-                    if any(net.subnet_of(r) for r in THIRD_PARTY_PEERING_RANGES):
-                        uses_third_party = True
-                        break
-        if uses_third_party and not NEW_TLM_ID:
+        if rule.get("_uses_third_party") and not NEW_TLM_ID:
             errors.append(
                 f"Rule {idx}: A Third Party ID (TLM ID) must be provided when using the third‑party‑peering boundary."
             )
     except Exception:
         pass
-
     return errors
 
 def parse_blocks(issue_body: str) -> List[str]:
@@ -276,7 +232,6 @@ def make_update_summary(idx: int, old_rule: Dict[str, Any], updates: Dict[str, A
 def main():
     global NEW_TLM_ID
 
-    # Read issue body from arg or stdin
     if len(sys.argv) == 2:
         issue_body = sys.argv[1]
     else:
@@ -284,17 +239,13 @@ def main():
     errors: List[str] = []
     summaries: List[str] = []
 
-    # Extract new REQID
     m_reqid = re.search(r"New Request ID.*?:\s*([A-Z0-9]+)", issue_body, re.IGNORECASE)
     new_reqid = m_reqid.group(1).strip() if m_reqid else None
     if not validate_reqid(new_reqid):
         errors.append(f"New REQID must be 'REQ' followed by 7 or 8 digits. Found: '{new_reqid}'.")
-
-    # Extract global TLM ID (optional)
-    m_tlm = re.search(r"New Third Party ID.*?:\s*(.+)", issue_body, re.IGNORECASE)
+    m_tlm = re.search(r"New Third Party ID\b.*?:\s*(.*)", issue_body, re.IGNORECASE)
     NEW_TLM_ID = m_tlm.group(1).strip() if m_tlm else ""
 
-    # Split into rule blocks
     blocks = parse_blocks(issue_body)
     update_reqs: List[Dict[str, Any]] = []
     for idx, block in enumerate(blocks, 1):
@@ -315,7 +266,6 @@ def main():
             "description": extract_field(block, "New Business Justification"),
         })
 
-    # If parse errors, output and exit
     if errors:
         print("VALIDATION_ERRORS_START")
         for e in errors:
@@ -323,13 +273,8 @@ def main():
         print("VALIDATION_ERRORS_END")
         sys.exit(1)
 
-    # Load existing rules
     rule_map, file_map = load_all_rules()
-
-    # Stage per-file updates: file -> (remaining_rules, updated_rules)
     files_to_update: Dict[str, Tuple[List[Dict[str, Any]], List[Tuple[str, Dict[str, Any]]]]] = {}
-
-    # Process each update request
     for req in update_reqs:
         idx = req["idx"]
         name = req["rule_name"]
@@ -338,21 +283,18 @@ def main():
             continue
         file = file_map[name]
         remaining, updated_list = files_to_update.get(file, ([], []))
-        # If this file hasn't been loaded yet, load its rules
         if not remaining and not updated_list:
             with open(file) as f:
                 data = json.load(f)
             for r in data.get("auto_firewall_rules", []):
                 remaining.append(r)
         to_update = rule_map[name].copy()
-        # Determine index of this rule in its file
         try:
             idx_in_file = [r.get("name") for r in remaining].index(name) + 1
         except ValueError:
             idx_in_file = 1
         to_update["_update_index"] = idx_in_file
 
-        # Build updates
         new_fields: Dict[str, Any] = {}
         if req["src_ip_ranges"]:
             new_fields["src_ip_ranges"] = req["src_ip_ranges"]
@@ -368,27 +310,20 @@ def main():
             new_fields["description"] = req["description"]
         new_carid = req["carid"]
 
-        # Capture old request ID from original name
         parts = to_update["name"].split("-")
         old_id = parts[1] if len(parts) > 1 else ""
 
-        # Determine if any actual field values will change
         actual_change = False
-        if req["src_ip_ranges"]:
-            if req["src_ip_ranges"] != to_update.get("src_ip_ranges", []):
-                actual_change = True
-        if req["dest_ip_ranges"]:
-            if req["dest_ip_ranges"] != to_update.get("dest_ip_ranges", []):
-                actual_change = True
-        if req["ports"]:
-            if req["ports"] != to_update.get("ports", []):
-                actual_change = True
-        if req["protocol"]:
-            if req["protocol"].lower() != to_update.get("protocol", "").lower():
-                actual_change = True
-        if req["direction"]:
-            if req["direction"].upper() != to_update.get("direction", "").upper():
-                actual_change = True
+        if req["src_ip_ranges"] and req["src_ip_ranges"] != to_update.get("src_ip_ranges", []):
+            actual_change = True
+        if req["dest_ip_ranges"] and req["dest_ip_ranges"] != to_update.get("dest_ip_ranges", []):
+            actual_change = True
+        if req["ports"] and req["ports"] != to_update.get("ports", []):
+            actual_change = True
+        if req["protocol"] and req["protocol"].lower() != to_update.get("protocol", "").lower():
+            actual_change = True
+        if req["direction"] and req["direction"].upper() != to_update.get("direction", "").upper():
+            actual_change = True
         if req["carid"]:
             old_carid = to_update.get("name", "AUTO-REQ-0-0").split("-")[2] if '-' in to_update.get("name", "") else ""
             if req["carid"] != old_carid:
@@ -413,7 +348,6 @@ def main():
             summaries.append(make_update_summary(idx, to_update, req, updated_rule))
         files_to_update[file] = (remaining, updated_list)
 
-    # If validation errors, report and exit
     if errors:
         print("VALIDATION_ERRORS_START")
         for e in errors:
@@ -421,7 +355,6 @@ def main():
         print("VALIDATION_ERRORS_END")
         sys.exit(1)
 
-    # Apply modifications per file
     changed_files: set = set()
     for file, (remaining_rules, updated_rules) in files_to_update.items():
         updated_names = {req["rule_name"] for req in update_reqs}
@@ -439,7 +372,6 @@ def main():
             else:
                 to_move_updates.append(r)
 
-        # Write back remaining + in_place updates to original file
         combined = []
         for r in orig_remaining:
             rr = r.copy()
@@ -461,7 +393,6 @@ def main():
                 os.remove(file)
                 changed_files.add(file)
 
-        # Move updates to new file if needed
         if to_move_updates:
             dirpath = os.path.dirname(file)
             new_filename = f"{new_reqid}.auto.tfvars.json"
@@ -482,12 +413,10 @@ def main():
             os.replace(tmp_new, new_path)
             changed_files.add(new_path)
 
-    # Write summary file
     with open("rule_update_summary.txt", "w") as f:
         for line in summaries:
             f.write(line + "\n")
 
-    # Run boundary mapper on changed files
     if changed_files:
         try:
             import subprocess
