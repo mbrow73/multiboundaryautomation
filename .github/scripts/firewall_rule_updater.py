@@ -147,6 +147,13 @@ def update_rule_fields(rule: Dict[str, Any], updates: Dict[str, Any], new_reqid:
 def validate_rule(rule: Dict[str, Any], idx: int) -> List[str]:
     """Validate a single firewall rule and return a list of error messages."""
     errors: List[str] = []
+    # Track whether source and destination individually fall within a third‑party boundary.
+    # We use these flags to decide whether a TLM ID is required.  If exactly one
+    # side is third‑party, the update request must include a TLM ID.  If both
+    # sides are third‑party (peering third‑party→third‑party), no TLM ID is
+    # necessary.
+    third_party_src = False
+    third_party_dst = False
     # Validate IP ranges
     for field in ["src_ip_ranges", "dest_ip_ranges"]:
         label = "Source" if field == "src_ip_ranges" else "Destination"
@@ -166,15 +173,28 @@ def validate_rule(rule: Dict[str, Any], idx: int) -> List[str]:
                     errors.append(f"Rule {idx}: {label} '{ip}' is /{net.prefixlen}, must be /24 or smaller unless it’s a GCP health‑check range.")
                 if any(net.subnet_of(r) for r in THIRD_PARTY_PEERING_RANGES):
                     rule["_uses_third_party"] = True
+                    # Record which side is third‑party for cross‑boundary checks
+                    if field == "src_ip_ranges":
+                        third_party_src = True
+                    else:
+                        third_party_dst = True
                 continue
             if not any(net.subnet_of(r) for r in PRIVATE_RANGES):
                 if not any(net.subnet_of(r) for r in ALLOWED_PUBLIC_RANGES):
                     errors.append(f"Rule {idx}: Public {label} '{ip}' not in allowed GCP ranges.")
                 if any(net.subnet_of(r) for r in THIRD_PARTY_PEERING_RANGES):
                     rule["_uses_third_party"] = True
+                    if field == "src_ip_ranges":
+                        third_party_src = True
+                    else:
+                        third_party_dst = True
                 continue
             if any(net.subnet_of(r) for r in THIRD_PARTY_PEERING_RANGES):
                 rule["_uses_third_party"] = True
+                if field == "src_ip_ranges":
+                    third_party_src = True
+                else:
+                    third_party_dst = True
 
     # Validate ports
     for p in rule.get("ports", []):
@@ -203,10 +223,15 @@ def validate_rule(rule: Dict[str, Any], idx: int) -> List[str]:
             errors.append(f"Rule {idx}: Health‑check ranges (35.191.0.0/16, 130.211.0.0/22) may only appear on the source side.")
     except Exception:
         pass
-    # Require a TLM ID for third‑party rules
+    # Require a TLM ID only when exactly one side of the rule is third‑party.
+    # If both the source and destination fall within third‑party boundaries we do not
+    # require a TLM ID (peering third‑party→third‑party), and if neither side
+    # is third‑party there is no requirement either.
     try:
-        if rule.get("_uses_third_party") and not NEW_TLM_ID:
-            errors.append(f"Rule {idx}: A Third Party ID (TLM ID) must be provided when using the third‑party‑peering boundary.")
+        if rule.get("_uses_third_party") and not NEW_TLM_ID and not (third_party_src and third_party_dst):
+            errors.append(
+                f"Rule {idx}: A Third Party ID (TLM ID) must be provided when using the third‑party‑peering boundary."
+            )
     except Exception:
         pass
     return errors
