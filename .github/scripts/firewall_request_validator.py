@@ -108,11 +108,19 @@ def main():
         errors.append(f"❌ CARID must be exactly 9 digits. Found: '{carid}'")
 
     # Extract TLM ID: match line that begins with "Third Party ID" but ignore parentheses text
-    m = re.search(r"Third Party ID\b.*?:\s*(.*)", issue, re.IGNORECASE)
+    # Extract TLM ID on the same line as the "Third Party ID" label.  We match only
+    # spaces or tabs after the colon to ensure we stop at a newline; without this
+    # restriction, a blank TLM field followed by a heading (e.g. "#### Rule 1")
+    # could be captured as the TLM ID.  If nothing is provided on that line,
+    # ``tlm_id`` will be an empty string.
+    m = re.search(r"Third Party ID\b.*?:[ \t]*([^\n\r]*)", issue, re.IGNORECASE)
     tlm_id = m.group(1).strip() if m else ""
 
-    # Split into rule blocks
-    blocks = re.split(r"#### Rule", issue, flags=re.IGNORECASE)[1:]
+    # Split into rule blocks.  Accept headings with any number of '#' characters (including none)
+    # so that both "#### Rule 1" and plain "Rule 1" are handled.  We split on patterns
+    # like "Rule 1", "## Rule 2", etc., and drop the first element (the text before the first rule).
+    blocks = re.split(r"(?:^|\n)#{0,6}\s*Rule\s*\d+\s*\n", issue, flags=re.IGNORECASE)
+    blocks = [b for b in blocks[1:] if b.strip()]
     seen = set()
 
     for idx, block in enumerate(blocks, 1):
