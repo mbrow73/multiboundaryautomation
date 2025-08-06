@@ -40,43 +40,6 @@ variable "ca_country_code" {
   default     = "US"
 }
 
-variable "manual_firewall_rules" {
-  description = <<-EOT
-    A list of manually maintained firewall policy rules.  Each object must include:
-      - name                   = unique name for the rule
-      - description            = human description
-      - priority               = rule priority (lower = higher match)
-      - direction              = "INGRESS" or "EGRESS"
-      - action                 = one of ["allow","deny","apply_security_profile_group"]
-      - security_profile_group = (if action == "apply_security_profile_group")
-      - enable_logging         = bool
-      - src_ip_ranges          = list(string)
-      - dest_ip_ranges         = list(string)
-      - ports                  = list(string)  # layer4 ports
-      - protocol               = string
-      - tls_inspection         = bool         # whether to decrypt TLS
-      - src_vpc                = string       # source boundary name
-      - dest_vpc               = string       # destination boundary name
-    The src_vpc/dest_vpc fields correspond to keys in var.vpc_boundaries.
-  EOT
-  type = list(object({
-    name                   = string
-    description            = string
-    priority               = number
-    direction              = string
-    action                 = string
-    security_profile_group = optional(string)
-    enable_logging         = bool
-    src_ip_ranges          = list(string)
-    dest_ip_ranges         = list(string)
-    ports                  = list(string)
-    protocol               = string
-    tls_inspection         = optional(bool)
-    src_vpc                = string
-    dest_vpc               = string
-  }))
-}
-
 variable "credentials" {
   description = "Path to the service account credentials JSON file"
   type        = string
