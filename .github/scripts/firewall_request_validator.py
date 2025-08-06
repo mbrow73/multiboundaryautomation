@@ -142,6 +142,12 @@ def main():
             errors.append(f"❌ Rule {idx}: Protocol must be one of tcp, udp, icmp, sctp (lowercase).")
 
         uses_third_party = False
+        # Track whether the source and destination sides individually fall within
+        # a third‑party boundary.  If both sides are third‑party, the rule is
+        # effectively peering a third‑party VPC to another third‑party VPC,
+        # which is not permitted.  We'll flag this as an error below.
+        third_party_src = False
+        third_party_dst = False
 
         for label, val in [("source", src), ("destination", dst)]:
             for ip_str in val.split(","):
@@ -163,6 +169,11 @@ def main():
                 # Check third‑party range first, regardless of prefix length
                 if any(net.subnet_of(r) for r in THIRD_PARTY_PEERING_RANGES):
                     uses_third_party = True
+                    # Record which side of the rule is third‑party.
+                    if label == "source":
+                        third_party_src = True
+                    else:
+                        third_party_dst = True
 
                 # Oversized prefix handling
                 if net.prefixlen < 24:
@@ -176,9 +187,16 @@ def main():
                         errors.append(f"❌ Rule {idx}: {label.capitalize()} '{ip_str}' is public and not in allowed GCP ranges.")
                     continue
 
-        # Require TLM ID when needed
-        if uses_third_party and not tlm_id:
-            errors.append(f"❌ Rule {idx}: A Third Party ID (TLM ID) must be provided when using the third‑party‑peering boundary.")
+        # Require a TLM ID only when exactly one side of the rule is third‑party.
+        # If both the source and destination fall within a third‑party boundary,
+        # we do not require a TLM ID (since it is effectively peering two
+        # third‑party zones).  If neither side is third‑party, there is no
+        # requirement either.  Only cross‑boundary (internal ↔ third‑party)
+        # rules require a TLM ID.
+        if uses_third_party and not tlm_id and not (third_party_src and third_party_dst):
+            errors.append(
+                f"❌ Rule {idx}: A Third Party ID (TLM ID) must be provided when using the third‑party‑peering boundary."
+            )
 
         # Validate ports
         for p in ports.split(","):
