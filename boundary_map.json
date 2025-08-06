@@ -1,6 +1,5 @@
 {
   "intranet": [
-    "10.0.0.0/8",
     "10.1.0.0/16"
   ],
   "dmz": [
@@ -8,17 +7,9 @@
   ],
   "onprem": [
     "192.168.0.0/16"
+  ],
+  "third_party_peering": [
+    "10.150.1.0/24"
   ]
 }
 
-/*
- * boundary_map.json defines the mapping between IP address ranges and
- * logical boundaries (VPCs).  Each key is the name of a boundary
- * (used in `vpc_boundaries`), and the value is a list of CIDR blocks
- * representing IP ranges that belong to that boundary.  The mapper
- * script will use these definitions to determine the appropriate
- * src_vpc and dest_vpc for each firewall rule based on its IP ranges.
- *
- * PLEASE customize these CIDR blocks to match your environment.  The
- * default values here are illustrative only.
- */

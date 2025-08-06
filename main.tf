@@ -41,12 +41,17 @@ module "fw_endpoints" {
 
   # Define only the associations you want.  Each key becomes the association name.
   firewall_endpoint_associations = {
-    "ngfw-us-east1-b-dmz" = {
+    "ngfw-us-central1-a-dmz" = {
       endpoint_name = "ngfw-us-central1-a"
       zone          = "us-central1-a"
       network_id    = "projects/dummy-project/global/networks/dmz"
     }
     "ngfw-us-central1-a-intranet" = {
+      endpoint_name = "ngfw-us-central1-a"
+      zone          = "us-central1-a"
+      network_id    = "projects/dummy-project/global/networks/intranet"
+    },
+    "ngfw-us-central1-a-third-party-peering" = {
       endpoint_name = "ngfw-us-central1-a"
       zone          = "us-central1-a"
       network_id    = "projects/dummy-project/global/networks/intranet"

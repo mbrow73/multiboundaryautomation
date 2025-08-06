@@ -8,4 +8,5 @@ vpc_boundaries = {
   dmz     = "projects/dummy-project/global/networks/dmz"
   intranet = "projects/dummy-project/global/networks/intranet"
   onprem   = "projects/dummy-project/global/networks/onprem"
+  third_party_peering = "projects/dummy-project/global/networks/onprem"
 }

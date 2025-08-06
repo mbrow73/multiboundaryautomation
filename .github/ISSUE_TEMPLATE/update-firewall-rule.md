@@ -4,14 +4,24 @@ about: "Request updates to one or more existing GCP firewall rules"
 labels: ["firewall-update-request"]
 ---
 
-### New Request ID (REQID): <!-- e.g. REQ2345678 -->
+### New Request ID (REQID):
+
+### New Third Party ID (optional):
 
 #### Rule 1
-**Current Rule Name**: <!-- e.g. AUTO-REQ1234567-123456789-TCP-443-1 -->
+**Current Rule Name**:
 **New Source IP(s) or CIDR(s)** (optional):  
 **New Destination IP(s) or CIDR(s)** (optional):  
-<!-- The direction field is no longer editable.  Direction will be determined automatically based on the source and destination boundaries. -->
 **New Port(s)** (optional):  
 **New Protocol** (optional):  
+**New CARID** (optional):  
 **New Business Justification** (optional):  
 
+#### Rule 2
+**Current Rule Name**:
+**New Source IP(s) or CIDR(s)** (optional):  
+**New Destination IP(s) or CIDR(s)** (optional):  
+**New Port(s)** (optional):  
+**New Protocol** (optional):  
+**New CARID** (optional):  
+**New Business Justification** (optional):  
