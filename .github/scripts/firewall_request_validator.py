@@ -1,29 +1,4 @@
 #!/usr/bin/env python3
-"""
-Firewall Request Validator
-
-This script validates new firewall rule **addition** requests.  It is
-invoked by the GitHub Actions workflow before a new `.auto.tfvars.json`
-file is generated.  The validator ensures that:
-
-* A request ID (REQID) and CARID are present and correctly formatted.
-* Each `#### Rule` block includes all required fields (source IPs,
-  destination IPs, ports, protocol, and business justification).
-* IP/CIDR values are syntactically valid, include a mask, are not 0.0.0.0/0,
-  and are not overly broad (/24 or larger) unless they fall within specific
-  GCP health‑check ranges.  Public IP ranges outside these exceptions are rejected.
-* Third‑party‑peering boundary detection: if a source or destination IP
-  falls within the defined third‑party ranges, a TLM ID must be supplied.
-* Ports are valid integers or ranges within 1–65535.
-* Protocols are one of tcp, udp, icmp, sctp (lowercase).
-* Duplicate rule definitions within a single request are flagged.
-* Rules are not exact duplicates or subsets of existing rules.
-
-If any errors are found, the validator prints them between
-`VALIDATION_ERRORS_START` and `VALIDATION_ERRORS_END` and exits non‑zero.
-Otherwise it exits silently.
-"""
-
 import re
 import sys
 import ipaddress
@@ -31,14 +6,13 @@ import glob
 import json
 from typing import Dict, List
 
-# Allowed public ranges for oversized CIDRs (/24 or larger).
+# Allowed public ranges for oversized CIDRs (/24 or larger)
 ALLOWED_PUBLIC_RANGES = [
     ipaddress.ip_network("35.191.0.0/16"),
     ipaddress.ip_network("130.211.0.0/22"),
     ipaddress.ip_network("199.36.153.4/30"),
 ]
 
-# Special ranges
 HEALTH_CHECK_RANGES = [
     ipaddress.ip_network("35.191.0.0/16"),
     ipaddress.ip_network("130.211.0.0/22"),
@@ -47,12 +21,11 @@ RESTRICTED_API_RANGES = [
     ipaddress.ip_network("199.36.153.4/30"),
 ]
 
-# Third‑party‑peering boundary CIDRs (edit to your actual ranges)
+# THIRD-PARTY CIDRs – replace with your real ranges
 THIRD_PARTY_PEERING_RANGES = [
     ipaddress.ip_network("10.150.1.0/24"),
 ]
 
-# RFC1918 private ranges
 PRIVATE_RANGES = [
     ipaddress.ip_network("10.0.0.0/8"),
     ipaddress.ip_network("172.16.0.0/12"),
@@ -67,15 +40,12 @@ def validate_carid(carid: str) -> bool:
 
 def validate_port(port: str) -> bool:
     if re.fullmatch(r"\d{1,5}", port or ""):
-        n = int(port)
-        return 1 <= n <= 65535
+        n = int(port); return 1 <= n <= 65535
     if re.fullmatch(r"\d{1,5}-\d{1,5}", port or ""):
-        a, b = map(int, port.split('-'))
-        return 1 <= a <= b <= 65535
+        a, b = map(int, port.split('-')); return 1 <= a <= b <= 65535
     return False
 
 def parse_existing_rules() -> List[Dict[str, str]]:
-    """Load existing auto firewall rules from JSON files into a list of summary dicts."""
     rules: List[Dict[str, str]] = []
     for path in glob.glob("firewall-requests/*.auto.tfvars.json"):
         try:
@@ -84,115 +54,88 @@ def parse_existing_rules() -> List[Dict[str, str]]:
             continue
         for r in data.get("auto_firewall_rules", []):
             rules.append({
-                "src":       ",".join(r.get("src_ip_ranges", [])),
-                "dst":       ",".join(r.get("dest_ip_ranges", [])),
-                "ports":     ",".join(r.get("ports", [])),
-                "proto":     r.get("protocol"),
+                "src": ",".join(r.get("src_ip_ranges", [])),
+                "dst": ",".join(r.get("dest_ip_ranges", [])),
+                "ports": ",".join(r.get("ports", [])),
+                "proto": r.get("protocol"),
                 "direction": r.get("direction"),
             })
     return rules
 
 def rule_exact_match(rule: Dict[str, str], rulelist: List[Dict[str, str]]) -> bool:
-    """Return True if rule exactly matches any existing rule."""
     for r in rulelist:
-        if (
-            rule["src"] == r["src"]
-            and rule["dst"] == r["dst"]
-            and rule["ports"] == r["ports"]
-            and rule["proto"] == r["proto"]
-            and rule["direction"] == r["direction"]
-        ):
+        if rule["src"] == r["src"] and rule["dst"] == r["dst"] \
+           and rule["ports"] == r["ports"] and rule["proto"] == r["proto"] \
+           and rule["direction"] == r["direction"]:
             return True
     return False
 
 def rule_is_redundant(rule: Dict[str, str], rulelist: List[Dict[str, str]]) -> bool:
-    """Return True if rule is a subset of an existing broader rule."""
     def subset(child: str, parent: str) -> bool:
-        try:
-            return ipaddress.ip_network(child, strict=False).subnet_of(
-                ipaddress.ip_network(parent, strict=False)
-            )
-        except Exception:
-            return False
+        try: return ipaddress.ip_network(child, strict=False).subnet_of(ipaddress.ip_network(parent, strict=False))
+        except Exception: return False
     for r in rulelist:
-        if rule["direction"] != r["direction"]:
-            continue
-        if rule["proto"] != r["proto"]:
-            continue
+        if rule["direction"] != r["direction"] or rule["proto"] != r["proto"]: continue
         srcs_child  = [c.strip() for c in rule["src"].split(",")]
         srcs_parent = [p.strip() for p in r["src"].split(",")]
         dsts_child  = [c.strip() for c in rule["dst"].split(",")]
         dsts_parent = [p.strip() for p in r["dst"].split(",")]
         ports_child = set(int(p) for p in rule["ports"].split(","))
         ports_parent= set(int(p) for p in r["ports"].split(","))
-        if (
-            all(any(subset(c, p) for p in srcs_parent) for c in srcs_child) and
-            all(any(subset(c, p) for p in dsts_parent) for c in dsts_child) and
-            ports_child.issubset(ports_parent)
-        ):
+        if all(any(subset(c,p) for p in srcs_parent) for c in srcs_child) and \
+           all(any(subset(c,p) for p in dsts_parent) for c in dsts_child) and \
+           ports_child.issubset(ports_parent):
             return True
     return False
 
 def parse_rule_block(block: str) -> Dict[str, str]:
-    """Extract fields from a rule block in the issue body."""
     def extract(label: str) -> str:
         m = re.search(rf"{label}.*?:\s*(.+)", block, re.IGNORECASE)
         return m.group(1).strip() if m else ""
-    src_ip = extract("New Source IP") or extract("New Source")
-    dst_ip = extract("New Destination IP") or extract("New Destination")
-    ports   = extract("New Port")
-    proto   = extract("New Protocol")
-    direction = extract("New Direction")
-    just    = extract("New Business Justification")
     return {
-        "src": src_ip,
-        "dst": dst_ip,
-        "ports": ports,
-        "proto": proto,
-        "direction": direction,
-        "just": just,
+        "src": extract("New Source IP") or extract("New Source"),
+        "dst": extract("New Destination IP") or extract("New Destination"),
+        "ports": extract("New Port"),
+        "proto": extract("New Protocol"),
+        "direction": extract("New Direction"),  # optional
+        "just": extract("New Business Justification"),
     }
 
 def main() -> None:
     issue = open(sys.argv[1]).read()
     errors: List[str] = []
 
-    # Extract REQID and CARID
+    # REQID and CARID
     m = re.search(r"Request ID.*?:\s*([A-Z0-9]+)", issue, re.IGNORECASE)
     reqid = m.group(1).strip() if m else None
-    if not validate_reqid(reqid):
-        errors.append(f"❌ REQID must be 'REQ' followed by 7–8 digits. Found: '{reqid}'")
+    if not validate_reqid(reqid): errors.append(f"❌ REQID must be 'REQ' followed by 7–8 digits. Found: '{reqid}'")
     m = re.search(r"CARID.*?:\s*(\d+)", issue, re.IGNORECASE)
     carid = m.group(1).strip() if m else None
-    if not validate_carid(carid):
-        errors.append(f"❌ CARID must be exactly 9 digits. Found: '{carid}'")
+    if not validate_carid(carid): errors.append(f"❌ CARID must be exactly 9 digits. Found: '{carid}'")
 
-    # Extract the TLM ID (Third Party ID).  Allow text in parentheses after the label.
+    # TLM ID (robust extraction; matches "Third Party ID:" even with parentheses)
     m = re.search(r"Third Party ID\b.*?:\s*(.*)", issue, re.IGNORECASE)
     tlm_id = m.group(1).strip() if m else ""
 
-    # Split into rule blocks
+    # Each Rule
     blocks = re.split(r"#### Rule", issue, flags=re.IGNORECASE)[1:]
     seen: set = set()
     for idx, blk in enumerate(blocks, 1):
         r = parse_rule_block(blk)
-        src, dst, ports, proto, direction, just = (
-            r["src"], r["dst"], r["ports"], r["proto"], r["direction"], r["just"]
-        )
+        src, dst, ports, proto, direction, just = r["src"], r["dst"], r["ports"], r["proto"], r["direction"], r["just"]
 
         # Required fields
         if not all([src, dst, ports, proto, just]):
             errors.append(f"❌ Rule {idx}: All fields (source, destination, port, protocol, justification) must be present.")
             continue
-        if proto != proto.lower() or proto not in {"tcp", "udp", "icmp", "sctp"}:
+        if proto != proto.lower() or proto not in {"tcp","udp","icmp","sctp"}:
             errors.append(f"❌ Rule {idx}: Protocol must be one of tcp, udp, icmp, sctp (lowercase).")
 
         uses_third_party = False
         for label, val in [("source", src), ("destination", dst)]:
             for ip_str in val.split(","):
                 ip_str = ip_str.strip()
-                if not ip_str:
-                    continue
+                if not ip_str: continue
                 if "/" not in ip_str:
                     errors.append(f"❌ Rule {idx}: {label.capitalize()} '{ip_str}' must include a CIDR mask (e.g. /32).")
                     continue
@@ -204,63 +147,53 @@ def main() -> None:
                 if net == ipaddress.ip_network("0.0.0.0/0"):
                     errors.append(f"❌ Rule {idx}: {label.capitalize()} may not be 0.0.0.0/0.")
                     continue
-
-                # Oversized CIDR must be within allowed GCP ranges
+                # Oversized prefix: must be within allowed GCP ranges
                 if net.prefixlen < 24:
                     if not any(net.subnet_of(rng) for rng in ALLOWED_PUBLIC_RANGES):
-                        errors.append(
-                            f"❌ Rule {idx}: {label.capitalize()} '{ip_str}' is /{net.prefixlen}, must be /24 or smaller unless it’s a GCP health‑check range."
-                        )
-                    # If it's oversized but in a third‑party range, still mark it
+                        errors.append(f"❌ Rule {idx}: {label.capitalize()} '{ip_str}' is /{net.prefixlen}, must be /24 or smaller unless it’s a GCP health‑check range.")
+                    # still detect third‑party on oversized net
                     if any(net.subnet_of(rng) for rng in THIRD_PARTY_PEERING_RANGES):
                         uses_third_party = True
                     continue
-
-                # Public CIDR must be within allowed ranges
-                in_private = any(net.subnet_of(rng) for rng in PRIVATE_RANGES)
-                if not in_private:
+                # Public addresses must be within allowed ranges
+                if not any(net.subnet_of(rng) for rng in PRIVATE_RANGES):
                     if not any(net.subnet_of(rng) for rng in ALLOWED_PUBLIC_RANGES):
-                        errors.append(
-                            f"❌ Rule {idx}: {label.capitalize()} '{ip_str}' is public and not in allowed GCP ranges."
-                        )
-                        continue
-
-                # Detect if this IP is in the third‑party boundary
+                        errors.append(f"❌ Rule {idx}: {label.capitalize()} '{ip_str}' is public and not in allowed GCP ranges.")
+                    # detect third party too
+                    if any(net.subnet_of(rng) for rng in THIRD_PARTY_PEERING_RANGES):
+                        uses_third_party = True
+                    continue
+                # Private net – check third‑party
                 if any(net.subnet_of(rng) for rng in THIRD_PARTY_PEERING_RANGES):
                     uses_third_party = True
 
-        # Enforce TLM ID when third‑party boundary is used
+        # Enforce TLM ID when third‑party range used
         if uses_third_party and not tlm_id:
             errors.append(f"❌ Rule {idx}: A Third Party ID (TLM ID) must be specified when using the third‑party‑peering boundary.")
 
-        # Port checks
+        # Port and duplicate checks
         for p in ports.split(","):
             p = p.strip()
             if not validate_port(p):
                 errors.append(f"❌ Rule {idx}: Invalid port or range: '{p}'.")
-
-        # Duplicate detection
         key = (src, dst, ports, proto, direction)
         if key in seen:
             errors.append(f"❌ Rule {idx}: Duplicate rule in request.")
         seen.add(key)
 
-    # Check duplicates and redundancy against existing rules
+    # Existing rules duplicate/redundancy check
     existing = parse_existing_rules()
     for idx, blk in enumerate(blocks, 1):
         r = parse_rule_block(blk)
-        if not all([r["src"], r["dst"], r["ports"], r["proto"]]):
-            continue
+        if not all([r["src"], r["dst"], r["ports"], r["proto"]]): continue
         if rule_exact_match(r, existing):
             errors.append(f"❌ Rule {idx}: Exact duplicate of existing rule.")
         elif rule_is_redundant(r, existing):
             errors.append(f"❌ Rule {idx}: Redundant—already covered by an existing broader rule.")
 
-    # Print and exit if errors
     if errors:
         print("VALIDATION_ERRORS_START")
-        for e in errors:
-            print(e)
+        for e in errors: print(e)
         print("VALIDATION_ERRORS_END")
         sys.exit(1)
 
