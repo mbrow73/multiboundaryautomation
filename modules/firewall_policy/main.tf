@@ -20,12 +20,6 @@
  * `policy_name` with the boundary key.
  */
 resource "google_compute_network_firewall_policy" "policies" {
-  # Only create a policy for real cloud VPC boundaries.  The "onprem"
-  # boundary acts as a fake boundary in the rule expansion logic and
-  # should not have a dedicated network firewall policy.  Filter it
-  # out of the for_each map so Terraform does not attempt to create a
-  # policy for it.  We use a comprehension to exclude keys equal to
-  # "onprem" (case-insensitive).
   for_each = {
     for k, v in var.vpc_boundaries : k => v if lower(k) != "onprem"
   }
@@ -40,9 +34,6 @@ resource "google_compute_network_firewall_policy" "policies" {
  * `vpc_boundaries`.
  */
 resource "google_compute_network_firewall_policy_association" "attach" {
-  # Attach the policy only for cloud VPC boundaries.  See above for
-  # rationale: we exclude the on‑prem boundary from attachments.  We
-  # mirror the same filtering logic used for the policy resource.
   for_each = {
     for k, v in var.vpc_boundaries : k => v if lower(k) != "onprem"
   }
@@ -54,83 +45,117 @@ resource "google_compute_network_firewall_policy_association" "attach" {
 /*
  * Expand the input rules into one or more per‑policy rules.  When a rule
  * references the special "onprem" boundary, it must traverse the
- * intranet boundary before leaving the cloud.  This means:
- *   • If either the src_vpc or dest_vpc is "onprem", a copy of the rule
- *     is always applied to the intranet policy.
- *   • If the other boundary is not "intranet", another copy is applied to
- *     that boundary as well (to handle the leg between the other VPC and
- *     the intranet hub).
- *   • When both sides are intranet/onprem, only a single intranet rule
- *     is generated.
+ * intranet boundary before leaving the cloud.  The logic below implements
+ * the following behaviour:
+ *
+ *   • Health‑check and restricted‑API ranges (src_vpc == dest_vpc) result in
+ *     a single rule on that boundary; the requested direction is preserved.
+ *
+ *   • onprem → intranet         → one ingress rule on intranet.
+ *   • intranet → onprem         → one egress rule on intranet.
+ *   • onprem → non‑intranet     → one ingress rule on the destination VPC
+ *                                 with inspection (apply_security = true).
+ *   • non‑intranet → onprem     → one egress rule on the source VPC
+ *                                 with inspection (apply_security = true).
+ *
+ *   • All other cross‑boundary traffic → two rules: an ingress rule on
+ *     the destination VPC and an egress rule on the source VPC.  The
+ *     egress rule is inspected (apply_security = true).
  */
 locals {
-  # For each input rule, build one or two per‑policy entries to ensure both
-  # ingress and egress sides are represented.  The 'dest' entry uses the
-  # original direction relative to the destination policy; the 'src' entry
-  # (if the source policy differs) uses the opposite direction.
   expanded_rules = flatten([
-    for r in var.inet_firewall_rules : [
-      for entry in concat(
-        # always include the destination side
-        [
-          {
-            policy             = lower(r.dest_vpc) == "onprem" ? "intranet" : lower(r.dest_vpc)
-            suffix             = "dest"
-            # Derive the direction for the destination side automatically.
-            #
-            # Normal cross‑boundary rules: when the destination boundary differs
-            # from the source, the destination side represents inbound traffic
-            # (INGRESS), except when the destination is on‑prem.  When the
-            # destination is on‑prem the traffic leaves the intranet hub, so
-            # the direction becomes EGRESS.
-            #
-            # Special cases for restricted API and health‑check ranges:
-            # boundary_mapper.py sets r.src_vpc and r.dest_vpc to the same
-            # boundary and populates r.direction with either "INGRESS" or
-            # "EGRESS".  When src_vpc == dest_vpc, we preserve the caller‑
-            # specified direction (upper‑cased) instead of defaulting to
-            # INGRESS.  This yields a single rule on that boundary with the
-            # appropriate direction (ingress for health‑checks, egress for
-            # restricted API calls).
-            direction_override = lower(r.dest_vpc) == "onprem" ? "EGRESS" : (
-              lower(r.dest_vpc) == lower(r.src_vpc) ? (
-                trimspace(r.direction) != "" ? upper(r.direction) : "INGRESS"
-              ) : "INGRESS"
+    for r in var.inet_firewall_rules : (
+      # Same boundary (health‑check or restricted‑API).  Use caller-supplied direction.
+      lower(r.src_vpc) == lower(r.dest_vpc) ? [
+        {
+          key                = "${r.name}-${(lower(r.dest_vpc) == "onprem" ? "intranet" : lower(r.dest_vpc))}-dest"
+          policy             = lower(r.dest_vpc) == "onprem" ? "intranet" : lower(r.dest_vpc)
+          suffix             = "dest"
+          direction_override = (trimspace(r.direction) != "" ? upper(r.direction) : "INGRESS")
+          apply_security     = false
+          rule               = r
+        }
+      ] :
+      # onprem → intranet: ingress rule on intranet
+      (lower(r.src_vpc) == "onprem" && lower(r.dest_vpc) == "intranet") ? [
+        {
+          key                = "${r.name}-intranet-dest"
+          policy             = "intranet"
+          suffix             = "dest"
+          direction_override = "INGRESS"
+          apply_security     = false
+          rule               = r
+        }
+      ] :
+      # intranet → onprem: egress rule on intranet
+      (lower(r.dest_vpc) == "onprem" && lower(r.src_vpc) == "intranet") ? [
+        {
+          key                = "${r.name}-intranet-dest"
+          policy             = "intranet"
+          suffix             = "dest"
+          direction_override = "EGRESS"
+          apply_security     = false
+          rule               = r
+        }
+      ] :
+      # onprem → non‑intranet: ingress rule on destination with inspection
+      (lower(r.src_vpc) == "onprem" && lower(r.dest_vpc) != "intranet") ? [
+        {
+          key                = "${r.name}-${lower(r.dest_vpc)}-dest"
+          policy             = lower(r.dest_vpc) == "onprem" ? "intranet" : lower(r.dest_vpc)
+          suffix             = "dest"
+          direction_override = "INGRESS"
+          apply_security     = true
+          rule               = r
+        }
+      ] :
+      # non‑intranet → onprem: egress rule on source with inspection
+      (lower(r.dest_vpc) == "onprem" && lower(r.src_vpc) != "intranet") ? [
+        {
+          key                = "${r.name}-${lower(r.src_vpc)}-dest"
+          policy             = lower(r.src_vpc) == "onprem" ? "intranet" : lower(r.src_vpc)
+          suffix             = "dest"
+          direction_override = "EGRESS"
+          apply_security     = true
+          rule               = r
+        }
+      ] :
+      # General cross‑VPC case: create both dest and src entries
+      [
+        {
+          key                = "${r.name}-${(lower(r.dest_vpc) == "onprem" ? "intranet" : lower(r.dest_vpc))}-dest"
+          policy             = lower(r.dest_vpc) == "onprem" ? "intranet" : lower(r.dest_vpc)
+          suffix             = "dest"
+          direction_override = (
+            lower(r.dest_vpc) == "onprem" ? "EGRESS" : (
+              lower(r.dest_vpc) == lower(r.src_vpc) ?
+                (trimspace(r.direction) != "" ? upper(r.direction) : "INGRESS") :
+                "INGRESS"
             )
-          }
-        ],
-        # include the source side (opposite direction) only if the policies differ
-        (
-          (
-            lower(r.dest_vpc) == "onprem" ? "intranet" : lower(r.dest_vpc)
-          ) != (
-            lower(r.src_vpc) == "onprem" ? "intranet" : lower(r.src_vpc)
           )
-        ) ? [
-          {
-            policy             = lower(r.src_vpc) == "onprem" ? "intranet" : lower(r.src_vpc)
-            suffix             = "src"
-            # The source side always represents traffic leaving its boundary, so
-            # override the direction to EGRESS regardless of the original request.
-            direction_override = "EGRESS"
-          }
-        ] : []
-      ) : {
-        key                = "${r.name}-${entry.policy}-${entry.suffix}"
-        rule               = r
-        target_policy      = entry.policy
-        direction_override = entry.direction_override
-      }
-    ]
+          apply_security     = false
+          rule               = r
+        },
+        {
+          key                = "${r.name}-${(lower(r.src_vpc) == "onprem" ? "intranet" : lower(r.src_vpc))}-src"
+          policy             = lower(r.src_vpc) == "onprem" ? "intranet" : lower(r.src_vpc)
+          suffix             = "src"
+          direction_override = "EGRESS"
+          apply_security     = true
+          rule               = r
+        }
+      ]
+    )
   ])
 
-  # Convert list to map keyed by unique key for use in for_each
   expanded_rules_map = {
-    for obj in local.expanded_rules : obj.key => merge(
+    for obj in local.expanded_rules :
+    obj.key => merge(
       obj.rule,
       {
-        target_policy      = obj.target_policy,
-        direction_override = obj.direction_override
+        target_policy      = obj.policy,
+        direction_override = obj.direction_override,
+        apply_security     = obj.apply_security
       }
     )
   }
@@ -140,52 +165,20 @@ locals {
  * Create firewall rules on the appropriate policy.  The policy is
  * selected based on the `target_policy` computed above.  The action
  * and security profile group are derived on‑the‑fly according to the
- * boundary logic: if the source and destination VPC differ (and it is
- * not the intranet→on‑prem case) then inspection is applied.
+ * boundary logic: if apply_security is true, we set the action to
+ * `apply_security_profile_group` and assign the configured security
+ * profile group ID; otherwise, we just allow the traffic.
  */
 resource "google_compute_network_firewall_policy_rule" "rule" {
   for_each        = local.expanded_rules_map
+
   firewall_policy = google_compute_network_firewall_policy.policies[each.value.target_policy].id
   description     = each.value.description
   priority        = each.value.priority
-  # Use the overridden direction computed during rule expansion.  This ensures
-  # that each boundary receives an appropriate ingress/egress rule.
   direction       = each.value.direction_override
 
-  # Derive action based on boundary logic.  Only apply a security profile to the
-  # egress side of cross‑boundary connections.  Ingress rules (where
-  # direction_override == "INGRESS") are always allowed because traffic has
-  # already been inspected.  For connections involving on‑prem, inspection is
-  # applied only on the non‑intranet boundary; the intranet side remains an
-  # allow because the intranet→on‑prem leg should not be re‑inspected.
-  action = (
-    lower(each.value.src_vpc) != lower(each.value.dest_vpc) &&
-    upper(each.value.direction_override) == "EGRESS" &&
-    !(
-      # Skip inspection on the dedicated intranet→on‑prem paths
-      (lower(each.value.src_vpc) == "intranet" && lower(each.value.dest_vpc) == "onprem") ||
-      (lower(each.value.src_vpc) == "onprem" && lower(each.value.dest_vpc) == "intranet") ||
-      # For any rule touching on‑prem, do not apply inspection on the intranet policy
-      (
-        (lower(each.value.src_vpc) == "onprem" || lower(each.value.dest_vpc) == "onprem") &&
-        each.value.target_policy == "intranet"
-      )
-    )
-  ) ? "apply_security_profile_group" : "allow"
-
-  # Conditionally set the security profile group using the same logic as above
-  security_profile_group = (
-    lower(each.value.src_vpc) != lower(each.value.dest_vpc) &&
-    upper(each.value.direction_override) == "EGRESS" &&
-    !(
-      (lower(each.value.src_vpc) == "intranet" && lower(each.value.dest_vpc) == "onprem") ||
-      (lower(each.value.src_vpc) == "onprem" && lower(each.value.dest_vpc) == "intranet") ||
-      (
-        (lower(each.value.src_vpc) == "onprem" || lower(each.value.dest_vpc) == "onprem") &&
-        each.value.target_policy == "intranet"
-      )
-    )
-  ) ? var.security_profile_group_id : null
+  action                 = each.value.apply_security ? "apply_security_profile_group" : "allow"
+  security_profile_group = each.value.apply_security ? var.security_profile_group_id : null
 
   enable_logging = each.value.enable_logging
   tls_inspect    = try(each.value.tls_inspect, false)
