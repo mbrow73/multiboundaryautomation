@@ -50,7 +50,6 @@ RESTRICTED_API_RANGES = [
 # Define your third‑party‑peering boundary CIDRs here.
 THIRD_PARTY_PEERING_RANGES = [
     ipaddress.ip_network("203.0.113.0/24"),  # example – replace with actual range(s)
-    # Add additional ranges as needed
 ]
 
 # Define private ranges explicitly (RFC1918).
@@ -60,7 +59,81 @@ PRIVATE_RANGES = [
     ipaddress.ip_network("192.168.0.0/16"),
 ]
 
-# ... existing helper functions: validate_reqid, validate_carid, validate_port, etc. ...
+def validate_reqid(reqid: str) -> bool:
+    return bool(re.fullmatch(r"REQ\d{7,8}", reqid or ""))
+
+def validate_carid(carid: str) -> bool:
+    return bool(re.fullmatch(r"\d{9}", carid or ""))
+
+def validate_port(port: str) -> bool:
+    if re.fullmatch(r"\d{1,5}", port or ""):
+        n = int(port)
+        return 1 <= n <= 65535
+    if re.fullmatch(r"\d{1,5}-\d{1,5}", port or ""):
+        a, b = map(int, port.split('-'))
+        return 1 <= a <= b <= 65535
+    return False
+
+def parse_existing_rules() -> List[Dict[str, str]]:
+    """Load existing auto firewall rules from JSON files into a list of summary dicts."""
+    rules: List[Dict[str, str]] = []
+    for path in glob.glob("firewall-requests/*.auto.tfvars.json"):
+        try:
+            data = json.load(open(path))
+        except Exception:
+            continue
+        for r in data.get("auto_firewall_rules", []):
+            rules.append({
+                "src":       ",".join(r.get("src_ip_ranges", [])),
+                "dst":       ",".join(r.get("dest_ip_ranges", [])),
+                "ports":     ",".join(r.get("ports", [])),
+                "proto":     r.get("protocol"),
+                "direction": r.get("direction"),
+            })
+    return rules
+
+def rule_exact_match(rule: Dict[str, str], rulelist: List[Dict[str, str]]) -> bool:
+    """Return True if rule exactly matches any existing rule."""
+    for r in rulelist:
+        if (
+            rule["src"] == r["src"]
+            and rule["dst"] == r["dst"]
+            and rule["ports"] == r["ports"]
+            and rule["proto"] == r["proto"]
+            and rule["direction"] == r["direction"]
+        ):
+            return True
+    return False
+
+def rule_is_redundant(rule: Dict[str, str], rulelist: List[Dict[str, str]]) -> bool:
+    """Return True if rule is a subset of an existing broader rule."""
+    def subset(child: str, parent: str) -> bool:
+        try:
+            return ipaddress.ip_network(child, strict=False).subnet_of(
+                ipaddress.ip_network(parent, strict=False)
+            )
+        except Exception:
+            return False
+
+    for r in rulelist:
+        # Protocol and direction must match
+        if rule["direction"] != r["direction"]:
+            continue
+        if rule["proto"] != r["proto"]:
+            continue
+        srcs_child  = [c.strip() for c in rule["src"].split(",")]
+        srcs_parent = [p.strip() for p in r["src"].split(",")]
+        dsts_child  = [c.strip() for c in rule["dst"].split(",")]
+        dsts_parent = [p.strip() for p in r["dst"].split(",")]
+        ports_child = set(int(p) for p in rule["ports"].split(","))
+        ports_parent= set(int(p) for p in r["ports"].split(","))
+        if (
+            all(any(subset(c, p) for p in srcs_parent) for c in srcs_child) and
+            all(any(subset(c, p) for p in dsts_parent) for c in dsts_child) and
+            ports_child.issubset(ports_parent)
+        ):
+            return True
+    return False
 
 def parse_rule_block(block: str) -> Dict[str, str]:
     """Extract fields from a rule block in the issue body."""
@@ -71,7 +144,7 @@ def parse_rule_block(block: str) -> Dict[str, str]:
     dst_ip = extract("New Destination IP") or extract("New Destination")
     ports   = extract("New Port")
     proto   = extract("New Protocol")
-    direction = extract("New Direction")
+    direction = extract("New Direction")  # still parsed but not required in template
     just    = extract("New Business Justification")
     return {
         "src": src_ip,
@@ -89,11 +162,11 @@ def main() -> None:
     # Extract REQID and CARID
     m = re.search(r"Request ID.*?:\s*([A-Z0-9]+)", issue, re.IGNORECASE)
     reqid = m.group(1).strip() if m else None
-    if not reqid or not re.fullmatch(r"REQ\d{7,8}", reqid):
+    if not validate_reqid(reqid):
         errors.append(f"❌ REQID must be 'REQ' followed by 7–8 digits. Found: '{reqid}'")
     m = re.search(r"CARID.*?:\s*(\d+)", issue, re.IGNORECASE)
     carid = m.group(1).strip() if m else None
-    if not carid or not re.fullmatch(r"\d{9}", carid):
+    if not validate_carid(carid):
         errors.append(f"❌ CARID must be exactly 9 digits. Found: '{carid}'")
 
     # Extract the TLM ID (Third Party ID) from the issue (optional)
@@ -118,6 +191,7 @@ def main() -> None:
 
         # Flags for third‑party range usage
         uses_third_party = False
+
         # Validate IP fields
         for label, val in [("source", src), ("destination", dst)]:
             for ip_str in val.split(","):
@@ -169,13 +243,13 @@ def main() -> None:
             if not validate_port(p):
                 errors.append(f"❌ Rule {idx}: Invalid port or range: '{p}'.")
 
-        # Duplicate detection
+        # Duplicate detection within this request
         key = (src, dst, ports, proto, direction)
         if key in seen:
             errors.append(f"❌ Rule {idx}: Duplicate rule in request.")
         seen.add(key)
 
-    # Check duplicates against existing rules (unchanged)
+    # Check duplicates and redundancy against existing rules
     existing = parse_existing_rules()
     for idx, blk in enumerate(blocks, 1):
         r = parse_rule_block(blk)
@@ -186,7 +260,7 @@ def main() -> None:
         elif rule_is_redundant(r, existing):
             errors.append(f"❌ Rule {idx}: Redundant—already covered by an existing broader rule.")
 
-    # Output and exit if errors
+    # Print and exit if errors
     if errors:
         print("VALIDATION_ERRORS_START")
         for e in errors:
