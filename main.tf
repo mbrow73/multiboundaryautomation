@@ -30,3 +30,30 @@ module "inet_firewall_policy" {
   security_profile_group_id = var.security_profile_group_id
   inet_firewall_rules = local.all_firewall_rules
 }
+
+module "fw_endpoints" {
+  source = "./modules/firewall_endpoint"
+
+  billing_project_id = "dummy-project"
+  org_id             = "organizations/123456789012"
+
+  # Define only the endpoints you want.
+  firewall_endpoints = {
+#    "ngfw-us-east1-b"     = { zone = "us-east1-b" }
+    "ngfw-us-central1-a"  = { zone = "us-central1-a" }
+  }
+
+  # Define only the associations you want.  Each key becomes the association name.
+  firewall_endpoint_associations = {
+    "ngfw-us-east1-b-dmz" = {
+      endpoint_name = "ngfw-us-central1-a"
+      zone          = "us-central1-a"
+      network_id    = "projects/dummy-project/global/networks/dmz"
+    }
+    "ngfw-us-central1-a-intranet" = {
+      endpoint_name = "ngfw-us-central1-a"
+      zone          = "us-central1-a"
+      network_id    = "projects/dummy-project/global/networks/intranet"
+    }
+  }
+}
