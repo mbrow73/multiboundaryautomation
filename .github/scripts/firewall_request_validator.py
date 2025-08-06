@@ -48,8 +48,10 @@ RESTRICTED_API_RANGES = [
 ]
 
 # Define your third‑party‑peering boundary CIDRs here.
+# Replace the example with your actual third‑party peering ranges
 THIRD_PARTY_PEERING_RANGES = [
-    ipaddress.ip_network("203.0.113.0/24"),  # example – replace with actual range(s)
+    ipaddress.ip_network("10.150.1.0/24"),
+    # ipaddress.ip_network("10.150.1.0/24"),  # example of an RFC1918 third‑party range
 ]
 
 # Define private ranges explicitly (RFC1918).
@@ -144,7 +146,7 @@ def parse_rule_block(block: str) -> Dict[str, str]:
     dst_ip = extract("New Destination IP") or extract("New Destination")
     ports   = extract("New Port")
     proto   = extract("New Protocol")
-    direction = extract("New Direction")  # still parsed but not required in template
+    direction = extract("New Direction")  # parsed but not required
     just    = extract("New Business Justification")
     return {
         "src": src_ip,
@@ -216,13 +218,11 @@ def main() -> None:
                         errors.append(
                             f"❌ Rule {idx}: {label.capitalize()} '{ip_str}' is /{net.prefixlen}, must be /24 or smaller unless it’s a GCP health‑check range."
                         )
-                    # Track special ranges on oversized CIDRs
                     continue
 
                 # Determine if IP is public (not RFC1918)
                 in_private = any(net.subnet_of(rng) for rng in PRIVATE_RANGES)
                 if not in_private:
-                    # Reject any public IP not in allowed ranges
                     if not any(net.subnet_of(rng) for rng in ALLOWED_PUBLIC_RANGES):
                         errors.append(
                             f"❌ Rule {idx}: {label.capitalize()} '{ip_str}' is public and not in allowed GCP ranges."
