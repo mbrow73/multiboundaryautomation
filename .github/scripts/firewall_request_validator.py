@@ -1,28 +1,74 @@
 #!/usr/bin/env python3
+"""
+Firewall request validator.
+
+This script validates firewall rule requests submitted via GitHub Issues. It enforces
+proper formatting for REQID and CARID values, checks that IP addresses and
+prefixes are well‑formed, and ensures ports and protocols are within
+acceptable ranges. It also applies special handling for Google health check
+ranges and restricted API ranges.
+
+When a rule involves a third‑party VPC (for example, a peering connection to an
+external partner), the requesting engineer must supply a Third‑Party ID (also
+called a TLM ID) in the issue body. To discover which IP ranges represent
+third‑party networks, this script reads the repository's ``boundary_map.json``
+file. Any entry whose key contains the substring ``"third"`` (case
+insensitive) is treated as a third‑party boundary. All CIDRs under such
+entries are collected into ``THIRD_PARTY_PEERING_RANGES``. If the boundary map
+is missing or unreadable, the validator falls back to a default set of CIDRs
+so that it can still run.
+"""
+
 import re
 import sys
 import ipaddress
 import glob
 import json
+import os
 
+# Allowed public ranges for Google services.
 ALLOWED_PUBLIC_RANGES = [
     ipaddress.ip_network("35.191.0.0/16"),
     ipaddress.ip_network("130.211.0.0/22"),
     ipaddress.ip_network("199.36.153.4/30"),
 ]
+
+# Subset of public ranges reserved for GCP health checks.
 HEALTH_CHECK_RANGES = [
     ipaddress.ip_network("35.191.0.0/16"),
     ipaddress.ip_network("130.211.0.0/22"),
 ]
+
+# Restricted API ranges that may only appear on the destination side of a rule.
 RESTRICTED_API_RANGES = [
     ipaddress.ip_network("199.36.153.4/30"),
 ]
 
-# Replace this with your real third‑party peering CIDRs
-THIRD_PARTY_PEERING_RANGES = [
-    ipaddress.ip_network("10.150.1.0/24"),
-]
+# Dynamically load third‑party peering ranges from boundary_map.json.  The map
+# lives at the repository root.  We locate it relative to this file (two
+# directories up) so the script can be executed from anywhere within the
+# project.  If reading the map fails or yields no ranges, we fall back to a
+# sensible default.
+try:
+    boundary_map_path = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..", "..", "boundary_map.json")
+    )
+    with open(boundary_map_path, "r", encoding="utf-8") as f:
+        _boundary_map = json.load(f)
+    THIRD_PARTY_PEERING_RANGES = [
+        ipaddress.ip_network(cidr)
+        for name, cidrs in _boundary_map.items()
+        if "third" in name.lower()
+        for cidr in cidrs
+    ]
+    if not THIRD_PARTY_PEERING_RANGES:
+        # Provide a default when no third‑party boundaries are defined.
+        THIRD_PARTY_PEERING_RANGES = [ipaddress.ip_network("10.150.1.0/24")]
+except Exception:
+    # Fallback to the original default if loading fails.
+    THIRD_PARTY_PEERING_RANGES = [ipaddress.ip_network("10.150.1.0/24")]
 
+# Private address space used for on‑premises and intranet networks.
 PRIVATE_RANGES = [
     ipaddress.ip_network("10.0.0.0/8"),
     ipaddress.ip_network("172.16.0.0/12"),
@@ -30,16 +76,21 @@ PRIVATE_RANGES = [
 ]
 
 def validate_reqid(reqid: str) -> bool:
+    """Validate that the REQID follows the pattern REQ followed by 7–8 digits."""
     return bool(re.fullmatch(r"REQ\d{7,8}", reqid or ""))
 
 def validate_carid(carid: str) -> bool:
+    """Validate that the CARID is exactly 9 digits."""
     return bool(re.fullmatch(r"\d{9}", carid or ""))
 
 def validate_port(port: str) -> bool:
+    """Validate that a port or port range is within 1–65535."""
     if re.fullmatch(r"\d{1,5}", port or ""):
-        n = int(port); return 1 <= n <= 65535
+        n = int(port)
+        return 1 <= n <= 65535
     if re.fullmatch(r"\d{1,5}-\d{1,5}", port or ""):
-        a,b = map(int, port.split('-')); return 1 <= a <= b <= 65535
+        a, b = map(int, port.split('-'))
+        return 1 <= a <= b <= 65535
     return False
 
 def main():
@@ -79,7 +130,7 @@ def main():
         if not all([src, dst, ports, proto, just]):
             errors.append(f"❌ Rule {idx}: All fields (source, destination, port, protocol, justification) must be present.")
             continue
-        if proto != proto.lower() or proto not in {"tcp","udp","icmp","sctp"}:
+        if proto != proto.lower() or proto not in {"tcp", "udp", "icmp", "sctp"}:
             errors.append(f"❌ Rule {idx}: Protocol must be one of tcp, udp, icmp, sctp (lowercase).")
 
         uses_third_party = False
@@ -87,7 +138,8 @@ def main():
         for label, val in [("source", src), ("destination", dst)]:
             for ip_str in val.split(","):
                 ip_str = ip_str.strip()
-                if not ip_str: continue
+                if not ip_str:
+                    continue
                 if "/" not in ip_str:
                     errors.append(f"❌ Rule {idx}: {label.capitalize()} '{ip_str}' must include a CIDR mask (e.g. /32).")
                     continue
@@ -134,7 +186,8 @@ def main():
     # Print and exit on errors
     if errors:
         print("VALIDATION_ERRORS_START")
-        for e in errors: print(e)
+        for e in errors:
+            print(e)
         print("VALIDATION_ERRORS_END")
         sys.exit(1)
 
