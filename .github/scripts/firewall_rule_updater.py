@@ -250,7 +250,10 @@ def main():
     new_reqid = m_reqid.group(1).strip() if m_reqid else None
     if not validate_reqid(new_reqid):
         errors.append(f"New REQID must be 'REQ' followed by 7 or 8 digits. Found: '{new_reqid}'.")
-    m_tlm = re.search(r"New Third Party ID\b.*?:\s*(.*)", issue_body, re.IGNORECASE)
+    # Capture the TLM ID only on the same line after the label.  Use a pattern
+    # that allows only spaces or tabs after the colon; this prevents a blank
+    # field followed by a heading from being captured as the TLM ID.
+    m_tlm = re.search(r"New Third Party ID\b.*?:[ \t]*([^\n\r]*)", issue_body, re.IGNORECASE)
     NEW_TLM_ID = m_tlm.group(1).strip() if m_tlm else ""
 
     blocks = parse_blocks(issue_body)

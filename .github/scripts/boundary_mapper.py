@@ -1,234 +1,203 @@
- #!/usr/bin/env python3
+#!/usr/bin/env python3
 """
-boundary_mapper.py
-===================
+Firewall request validator.
 
-This script assigns `src_vpc` and `dest_vpc` values to each rule in a
-`*.auto.tfvars.json` file based on a CIDR→boundary map and also infers
-the firewall rule’s `direction` for certain well‑known public ranges.
+This script validates firewall rule requests submitted via GitHub Issues. It enforces
+proper formatting for REQID and CARID values, checks that IP addresses and
+prefixes are well‑formed, and ensures ports and protocols are within
+acceptable ranges. It also applies special handling for Google health check
+ranges and restricted API ranges.
 
-It takes three arguments:
-
-    --map-file       Path to a JSON file mapping boundary names to lists of
-                     CIDR strings.  Lines beginning with `//` and block
-                     comments are ignored.
-    --json-file      The `.auto.tfvars.json` file to update in place.
-    --default-boundary  (optional) Boundary to use for IPs not found in
-                     the map; if omitted, unmapped IPs cause an error.
-
-For each rule it determines which boundary each source and destination
-IP belongs to (picking the most specific matching CIDR).  All source
-ranges must resolve to the same boundary; the same applies to all
-destination ranges.  It then writes those boundaries into the rule.
-
-If the rule’s `direction` field is empty (or missing), the script also
-performs a simple classification:
-
-* If **all** source ranges fall within the health‑check CIDRs
-  (`35.191.0.0/16` or `130.211.0.0/22`), the rule is marked as
-  `INGRESS`.  This means only inbound health‑check traffic is allowed.
-
-* Else if **all** destination ranges fall within the restricted API
-  CIDRs (`199.36.153.4/30`), the rule is marked as `EGRESS`.  This
-  allows outbound calls to `restricted.googleapis.com` without a
-  matching ingress.
-
-Otherwise the `direction` field is left unchanged.  After updating
-boundaries and direction the file is rewritten atomically.
+When a rule involves a third‑party VPC (for example, a peering connection to an
+external partner), the requesting engineer must supply a Third‑Party ID (also
+called a TLM ID) in the issue body. To discover which IP ranges represent
+third‑party networks, this script reads the repository's ``boundary_map.json``
+file. Any entry whose key contains the substring ``"third"`` (case
+insensitive) is treated as a third‑party boundary. All CIDRs under such
+entries are collected into ``THIRD_PARTY_PEERING_RANGES``. If the boundary map
+is missing or unreadable, the validator falls back to a default set of CIDRs
+so that it can still run.
 """
 
-import argparse
-import json
-import ipaddress
+import re
 import sys
+import ipaddress
+import glob
+import json
 import os
-from typing import Dict, List, Tuple, Optional
 
-# Health‑check ranges.  When all source IPs of a rule fall within
-# these CIDRs, the rule is treated as inbound only (INGRESS).  These
-# ranges originate from Google’s global health‑check infrastructure
-# and should never appear on the destination side of a rule.
-HEALTH_CHECK_RANGES: List[ipaddress.IPv4Network] = [
+# Allowed public ranges for Google services.
+ALLOWED_PUBLIC_RANGES = [
+    ipaddress.ip_network("35.191.0.0/16"),
+    ipaddress.ip_network("130.211.0.0/22"),
+    ipaddress.ip_network("199.36.153.4/30"),
+]
+
+# Subset of public ranges reserved for GCP health checks.
+HEALTH_CHECK_RANGES = [
     ipaddress.ip_network("35.191.0.0/16"),
     ipaddress.ip_network("130.211.0.0/22"),
 ]
 
-# Restricted API ranges.  When all destination IPs of a rule fall
-# within these CIDRs, the rule is treated as outbound only (EGRESS).
-# These ranges represent `restricted.googleapis.com` and related
-# services.  They should never appear on the source side of a rule.
-RESTRICTED_API_RANGES: List[ipaddress.IPv4Network] = [
+# Restricted API ranges that may only appear on the destination side of a rule.
+RESTRICTED_API_RANGES = [
     ipaddress.ip_network("199.36.153.4/30"),
 ]
 
-def load_boundary_map(path: str) -> Dict[str, List[str]]:
-    """Load boundary_map.json, stripping out // comments and /* */ blocks."""
-    with open(path) as f:
-        lines = f.readlines()
-    json_lines: List[str] = []
-    in_block = False
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith("/*"):
-            in_block = True
+# Dynamically load third‑party peering ranges from boundary_map.json.  The map
+# lives at the repository root.  We locate it relative to this file (two
+# directories up) so the script can be executed from anywhere within the
+# project.  If reading the map fails or yields no ranges, we fall back to a
+# sensible default.
+try:
+    boundary_map_path = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..", "..", "boundary_map.json")
+    )
+    with open(boundary_map_path, "r", encoding="utf-8") as f:
+        _boundary_map = json.load(f)
+    THIRD_PARTY_PEERING_RANGES = [
+        ipaddress.ip_network(cidr)
+        for name, cidrs in _boundary_map.items()
+        if "third" in name.lower()
+        for cidr in cidrs
+    ]
+    if not THIRD_PARTY_PEERING_RANGES:
+        # Provide a default when no third‑party boundaries are defined.
+        THIRD_PARTY_PEERING_RANGES = [ipaddress.ip_network("10.150.1.0/24")]
+except Exception:
+    # Fallback to the original default if loading fails.
+    THIRD_PARTY_PEERING_RANGES = [ipaddress.ip_network("10.150.1.0/24")]
+
+# Private address space used for on‑premises and intranet networks.
+PRIVATE_RANGES = [
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+]
+
+def validate_reqid(reqid: str) -> bool:
+    """Validate that the REQID follows the pattern REQ followed by 7–8 digits."""
+    return bool(re.fullmatch(r"REQ\d{7,8}", reqid or ""))
+
+def validate_carid(carid: str) -> bool:
+    """Validate that the CARID is exactly 9 digits."""
+    return bool(re.fullmatch(r"\d{9}", carid or ""))
+
+def validate_port(port: str) -> bool:
+    """Validate that a port or port range is within 1–65535."""
+    if re.fullmatch(r"\d{1,5}", port or ""):
+        n = int(port)
+        return 1 <= n <= 65535
+    if re.fullmatch(r"\d{1,5}-\d{1,5}", port or ""):
+        a, b = map(int, port.split('-'))
+        return 1 <= a <= b <= 65535
+    return False
+
+def main():
+    issue = open(sys.argv[1]).read()
+    errors = []
+
+    # Extract REQID and CARID
+    m = re.search(r"Request ID.*?:\s*([A-Z0-9]+)", issue, re.IGNORECASE)
+    reqid = m.group(1).strip() if m else None
+    if not validate_reqid(reqid):
+        errors.append(f"❌ REQID must be 'REQ' followed by 7–8 digits. Found: '{reqid}'")
+    m = re.search(r"CARID.*?:\s*(\d+)", issue, re.IGNORECASE)
+    carid = m.group(1).strip() if m else None
+    if not validate_carid(carid):
+        errors.append(f"❌ CARID must be exactly 9 digits. Found: '{carid}'")
+
+    # Extract TLM ID: match line that begins with "Third Party ID" but ignore parentheses text
+    # Extract TLM ID on the same line as the "Third Party ID" label.  We match only
+    # spaces or tabs after the colon to ensure we stop at a newline; without this
+    # restriction, a blank TLM field followed by a heading (e.g. "#### Rule 1")
+    # could be captured as the TLM ID.  If nothing is provided on that line,
+    # ``tlm_id`` will be an empty string.
+    m = re.search(r"Third Party ID\b.*?:[ \t]*([^\n\r]*)", issue, re.IGNORECASE)
+    tlm_id = m.group(1).strip() if m else ""
+
+    # Split into rule blocks.  Accept headings with any number of '#' characters (including none)
+    # so that both "#### Rule 1" and plain "Rule 1" are handled.  We split on patterns
+    # like "Rule 1", "## Rule 2", etc., and drop the first element (the text before the first rule).
+    blocks = re.split(r"(?:^|\n)#{0,6}\s*Rule\s*\d+\s*\n", issue, flags=re.IGNORECASE)
+    blocks = [b for b in blocks[1:] if b.strip()]
+    seen = set()
+
+    for idx, block in enumerate(blocks, 1):
+        # Parse fields (keep direction optional)
+        def extract(label):
+            m = re.search(rf"{label}.*?:\s*(.+)", block, re.IGNORECASE)
+            return m.group(1).strip() if m else ""
+        src = extract("New Source IP") or extract("New Source")
+        dst = extract("New Destination IP") or extract("New Destination")
+        ports = extract("New Port")
+        proto = extract("New Protocol")
+        just = extract("New Business Justification")
+        direction = extract("New Direction")
+
+        if not all([src, dst, ports, proto, just]):
+            errors.append(f"❌ Rule {idx}: All fields (source, destination, port, protocol, justification) must be present.")
             continue
-        if in_block:
-            if stripped.endswith("*/"):
-                in_block = False
-            continue
-        if '//' in line:
-            idx = line.find('//')
-            prefix = line[:idx]
-            # Remove line comment outside of strings
-            if prefix.count('"') % 2 == 0:
-                line = prefix + "\n"
-        json_lines.append(line)
-    return json.loads("".join(json_lines))
+        if proto != proto.lower() or proto not in {"tcp", "udp", "icmp", "sctp"}:
+            errors.append(f"❌ Rule {idx}: Protocol must be one of tcp, udp, icmp, sctp (lowercase).")
 
-def build_network_index(boundary_map: Dict[str, List[str]]) -> List[Tuple[ipaddress.IPv4Network, str]]:
-    """Return a list of (network, boundary) sorted by prefix length (descending)."""
-    nets: List[Tuple[ipaddress.IPv4Network, str]] = []
-    for boundary, cidrs in boundary_map.items():
-        for cidr in cidrs:
-            nets.append((ipaddress.ip_network(cidr, strict=False), boundary))
-    nets.sort(key=lambda x: x[0].prefixlen, reverse=True)
-    return nets
+        uses_third_party = False
 
-def determine_boundary(ip_list: List[str], index: List[Tuple[ipaddress.IPv4Network, str]], default_boundary: Optional[str]) -> str:
-    """Map each CIDR in ip_list to a boundary.  All must map to the same.
+        for label, val in [("source", src), ("destination", dst)]:
+            for ip_str in val.split(","):
+                ip_str = ip_str.strip()
+                if not ip_str:
+                    continue
+                if "/" not in ip_str:
+                    errors.append(f"❌ Rule {idx}: {label.capitalize()} '{ip_str}' must include a CIDR mask (e.g. /32).")
+                    continue
+                try:
+                    net = ipaddress.ip_network(ip_str, strict=False)
+                except Exception:
+                    errors.append(f"❌ Rule {idx}: Invalid {label} IP/CIDR '{ip_str}'.")
+                    continue
+                if net == ipaddress.ip_network("0.0.0.0/0"):
+                    errors.append(f"❌ Rule {idx}: {label.capitalize()} may not be 0.0.0.0/0.")
+                    continue
 
-    If default_boundary is provided and a CIDR maps to none, the default is used.
-    """
-    boundaries: set = set()
-    for ip_str in ip_list:
-        ip_str = ip_str.strip()
-        if not ip_str:
-            continue
-        net = ipaddress.ip_network(ip_str, strict=False)
-        found = None
-        for candidate, boundary in index:
-            if net.subnet_of(candidate):
-                found = boundary
-                break
-        if found is None:
-            if default_boundary is not None:
-                found = default_boundary
-            else:
-                raise ValueError(f"No boundary mapping found for {ip_str}")
-        boundaries.add(found)
-    if len(boundaries) != 1:
-        raise ValueError(f"Ambiguous boundaries {boundaries} for IP ranges {ip_list}")
-    return next(iter(boundaries))
+                # Check third‑party range first, regardless of prefix length
+                if any(net.subnet_of(r) for r in THIRD_PARTY_PEERING_RANGES):
+                    uses_third_party = True
 
-def ranges_in_list(ranges: List[str], allowed: List[ipaddress.IPv4Network]) -> bool:
-    """Return True if every CIDR in `ranges` is a subnet of some CIDR in `allowed`."""
-    for ip_str in ranges:
-        ip_str = ip_str.strip()
-        if not ip_str:
-            continue
-        net = ipaddress.ip_network(ip_str, strict=False)
-        if not any(net.subnet_of(a) for a in allowed):
-            return False
-    return True
+                # Oversized prefix handling
+                if net.prefixlen < 24:
+                    if not any(net.subnet_of(r) for r in ALLOWED_PUBLIC_RANGES):
+                        errors.append(f"❌ Rule {idx}: {label.capitalize()} '{ip_str}' is /{net.prefixlen}, must be /24 or smaller unless it’s a GCP health‑check range.")
+                    continue
 
-def update_tfvars_file(json_path: str, boundary_index: List[Tuple[ipaddress.IPv4Network, str]], default_boundary: Optional[str] = None) -> None:
-    """Update src_vpc, dest_vpc and direction fields in a .auto.tfvars.json file."""
-    data = json.load(open(json_path))
-    if "auto_firewall_rules" not in data or not isinstance(data["auto_firewall_rules"], list):
-        raise ValueError(f"Unexpected format: {json_path} does not contain 'auto_firewall_rules'")
-    for rule in data["auto_firewall_rules"]:
-        src_ranges = rule.get("src_ip_ranges", [])
-        dst_ranges = rule.get("dest_ip_ranges", [])
+                # Public range check
+                if not any(net.subnet_of(r) for r in PRIVATE_RANGES):
+                    if not any(net.subnet_of(r) for r in ALLOWED_PUBLIC_RANGES):
+                        errors.append(f"❌ Rule {idx}: {label.capitalize()} '{ip_str}' is public and not in allowed GCP ranges.")
+                    continue
 
-        # Health‑check rules: if every source range falls within the
-        # health‑check CIDRs, we treat this as an inbound‑only rule.  We
-        # assign the destination boundary based on the destination CIDRs
-        # and assign a synthetic "health_check" boundary to the source
-        # side.  This avoids attempting to map the health‑check ranges
-        # through the boundary map (which would fail) while still
-        # preserving the destination boundary for policy evaluation.
-        if src_ranges and ranges_in_list(src_ranges, HEALTH_CHECK_RANGES):
-            # All source IPs are in the health‑check list.  We assign
-            # both src_vpc and dest_vpc to the destination boundary.
-            try:
-                dest_boundary = determine_boundary(dst_ranges, boundary_index, default_boundary)
-            except Exception:
-                dest_boundary = default_boundary or "unknown"
-            # Use dest_boundary for both source and destination to avoid
-            # referencing a nonexistent boundary like "health_check" in
-            # downstream Terraform.  The firewall rule will still be
-            # direction=INGRESS and will target the dest boundary's
-            # policy only.
-            rule["src_vpc"] = dest_boundary
-            rule["dest_vpc"] = dest_boundary
-            if not (rule.get("direction") or "").strip():
-                rule["direction"] = "INGRESS"
-            continue
+        # Require TLM ID when needed
+        if uses_third_party and not tlm_id:
+            errors.append(f"❌ Rule {idx}: A Third Party ID (TLM ID) must be provided when using the third‑party‑peering boundary.")
 
-        # Restricted API rules: if every destination range falls within
-        # the restricted API CIDRs, we treat this as an outbound‑only
-        # rule.  We assign the source boundary based on the source
-        # CIDRs and a synthetic "restricted_api" boundary to the
-        # destination side.  This avoids mapping restricted ranges
-        # through the boundary map.  Direction is forced to EGRESS if
-        # blank.
-        if dst_ranges and ranges_in_list(dst_ranges, RESTRICTED_API_RANGES):
-            # All destination IPs are in the restricted API list.  We
-            # assign both src_vpc and dest_vpc to the source boundary.
-            try:
-                src_boundary = determine_boundary(src_ranges, boundary_index, default_boundary)
-            except Exception:
-                src_boundary = default_boundary or "unknown"
-            rule["src_vpc"] = src_boundary
-            rule["dest_vpc"] = src_boundary
-            if not (rule.get("direction") or "").strip():
-                rule["direction"] = "EGRESS"
-            continue
+        # Validate ports
+        for p in ports.split(","):
+            if not validate_port(p.strip()):
+                errors.append(f"❌ Rule {idx}: Invalid port or range: '{p.strip()}'")
 
-        # Normal rules: map both source and destination through the
-        # boundary map.  If default_boundary is None and mapping
-        # fails, determine_boundary will raise an error which will
-        # propagate up.
-        src_boundary = determine_boundary(src_ranges, boundary_index, default_boundary)
-        dst_boundary = determine_boundary(dst_ranges, boundary_index, default_boundary)
-        rule["src_vpc"] = src_boundary
-        rule["dest_vpc"] = dst_boundary
-        # Infer direction if empty/missing (unchanged logic)
-        direction = (rule.get("direction") or "").strip()
-        if not direction:
-            if src_ranges and ranges_in_list(src_ranges, HEALTH_CHECK_RANGES):
-                rule["direction"] = "INGRESS"
-            elif dst_ranges and ranges_in_list(dst_ranges, RESTRICTED_API_RANGES):
-                rule["direction"] = "EGRESS"
-    # Write back atomically
-    tmp_path = json_path + ".tmp"
-    with open(tmp_path, "w") as f:
-        json.dump(data, f, indent=2)
-        f.write("\n")
-    os.replace(tmp_path, json_path)
+        # Duplicate rule detection within the issue
+        key = (src, dst, ports, proto, direction)
+        if key in seen:
+            errors.append(f"❌ Rule {idx}: Duplicate rule in request.")
+        seen.add(key)
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Assign src_vpc/dest_vpc and infer direction based on CIDRs.")
-    parser.add_argument("--map-file", required=True, help="Boundary map JSON file (comments allowed)")
-    parser.add_argument("--json-file", required=True, help="TFVars JSON file to update")
-    parser.add_argument("--default-boundary", default=None, help="Fallback boundary for unmapped CIDRs")
-    args = parser.parse_args()
-    try:
-        boundary_map = load_boundary_map(args.map_file)
-    except Exception as exc:
-        print(f"Failed to load boundary map {args.map_file}: {exc}", file=sys.stderr)
+    # Print and exit on errors
+    if errors:
+        print("VALIDATION_ERRORS_START")
+        for e in errors:
+            print(e)
+        print("VALIDATION_ERRORS_END")
         sys.exit(1)
-    try:
-        boundary_index = build_network_index(boundary_map)
-    except Exception as exc:
-        print(f"Invalid boundary map: {exc}", file=sys.stderr)
-        sys.exit(1)
-    try:
-        update_tfvars_file(args.json_file, boundary_index, args.default_boundary)
-    except Exception as exc:
-        print(f"Error updating {args.json_file}: {exc}", file=sys.stderr)
-        sys.exit(1)
-    print(f"Updated {args.json_file} with boundaries and directions.")
 
 if __name__ == "__main__":
     main()
