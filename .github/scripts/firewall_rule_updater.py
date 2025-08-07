@@ -408,6 +408,11 @@ def main() -> None:
     # direction after applying the update.  We use a set to detect duplicates.
     updated_keys: set = set()
 
+    # Keep track of which original rules should be removed from their source
+    # files. Each entry is a tuple of (rule_name, file_path) so we can
+    # perform cleanup after the new file has been written.
+    rules_to_remove: List[Tuple[str, str]] = []
+
     for req in update_reqs:
         idx = req["idx"]
         name = req["rule_name"]
@@ -483,6 +488,11 @@ def main() -> None:
         updated_keys.add(dup_key)
         updated_rules.append(updated_rule)
         summaries.append(make_update_summary(idx, to_update, req, updated_rule))
+        # Mark the original rule for removal from its file.  We use file_map to
+        # locate the source file.  It's possible that multiple update blocks
+        # reference rules from different files; each will be removed individually.
+        if name in file_map:
+            rules_to_remove.append((name, file_map[name]))
 
     if errors:
         print("VALIDATION_ERRORS_START")
@@ -554,6 +564,28 @@ def main() -> None:
     except Exception:
         # Mapping errors are suppressed; boundary mapping will be retried in the GitHub workflow.
         pass
+
+    # Remove the old rules from their original files now that the updated
+    # versions have been written.  We iterate over the collected list of
+    # (rule_name, file_path) pairs, load each file, filter out the old rule
+    # by its name, and write the file back.  If a file becomes empty, we
+    # leave it in place with an empty auto_firewall_rules list so that the
+    # workflow can still operate on it in future.
+    for old_name, orig_path in rules_to_remove:
+        try:
+            with open(orig_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            continue
+        rules = data.get("auto_firewall_rules", [])
+        filtered = [r for r in rules if r.get("name") != old_name]
+        # Only rewrite the file if a rule was actually removed
+        if len(filtered) != len(rules):
+            tmp_file = orig_path + ".tmp"
+            with open(tmp_file, "w", encoding="utf-8") as f:
+                json.dump({"auto_firewall_rules": filtered}, f, indent=2)
+                f.write("\n")
+            os.replace(tmp_file, orig_path)
 
 
 if __name__ == "__main__":
