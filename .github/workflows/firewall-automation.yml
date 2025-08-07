@@ -62,14 +62,20 @@ jobs:
         run: |
           mkdir -p firewall-requests
           if compgen -G "firewall-requests/*.auto.tfvars.json" > /dev/null; then
-            # Use jq to find the maximum priority across all files.  Guard against
+            # Use jq to find the maximum priority across all auto rules.  Guard against
             # null or empty results by providing a default of 999.
             MAX=$(jq -s '[ .[].auto_firewall_rules[].priority // empty ] | max // 999' firewall-requests/*.auto.tfvars.json)
           else
             MAX=999
           fi
-          # jq may return null or an empty string if no numeric priorities are found.
+          # If jq returned null or an empty string, default to 999.
           if [[ -z "$MAX" || "$MAX" == "null" ]]; then
+            MAX=999
+          fi
+          # Ignore existing priorities below 1000 (e.g. legacy or malformed auto rules).
+          # If the highest found priority is less than 1000, reset to 999 so that
+          # new rules will start at 1000.
+          if [[ "$MAX" =~ ^[0-9]+$ ]] && [ "$MAX" -lt 1000 ]; then
             MAX=999
           fi
           echo "MAX_PRIORITY<<EOF" >> $GITHUB_OUTPUT
