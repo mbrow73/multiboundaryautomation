@@ -33,7 +33,6 @@ import json
 import ipaddress
 import subprocess
 from typing import Dict, List, Tuple, Any
-import copy  # Added for deep copying of rules
 
 # Allowed public ranges for Google services.
 ALLOWED_PUBLIC_RANGES = [
@@ -60,11 +59,7 @@ PRIVATE_RANGES = [
     ipaddress.ip_network("192.168.0.0/16"),
 ]
 
-# Dynamically load third‑party peering ranges from boundary_map.json.  The map
-# lives at the repository root.  We locate it relative to this file (two
-# directories up) so the script can be executed from anywhere within the
-# project.  If reading the map fails or yields no ranges, we fall back to a
-# sensible default.
+# Dynamically load third‑party peering ranges from boundary_map.json.
 try:
     boundary_map_path = os.path.abspath(
         os.path.join(os.path.dirname(__file__), "..", "..", "boundary_map.json")
@@ -82,19 +77,15 @@ try:
 except Exception:
     THIRD_PARTY_PEERING_RANGES = [ipaddress.ip_network("10.150.1.0/24")]
 
-# Placeholder for the TLM ID extracted from the issue (for update requests).
 NEW_TLM_ID = ""
 
 def validate_reqid(reqid: str) -> bool:
-    """Validate that the REQID follows the pattern REQ followed by 7–8 digits."""
     return bool(re.fullmatch(r"REQ\d{7,8}", reqid or ""))
 
 def validate_carid(carid: str) -> bool:
-    """Validate that the CARID is exactly 9 digits."""
     return bool(re.fullmatch(r"\d{9}", carid or ""))
 
 def validate_ip(ip: str) -> bool:
-    """Return True if the string represents a valid IP address or network."""
     try:
         if "/" in ip:
             ipaddress.ip_network(ip, strict=False)
@@ -105,7 +96,6 @@ def validate_ip(ip: str) -> bool:
         return False
 
 def validate_port(port: str) -> bool:
-    """Validate that a port or port range is within 1–65535."""
     if re.fullmatch(r"\d{1,5}", port or ""):
         n = int(port)
         return 1 <= n <= 65535
@@ -115,15 +105,9 @@ def validate_port(port: str) -> bool:
     return False
 
 def validate_protocol(proto: str) -> bool:
-    """Validate that the protocol is one of tcp, udp, icmp, or sctp (case insensitive)."""
     return proto.lower() in {"tcp", "udp", "icmp", "sctp"}
 
 def load_all_rules() -> Tuple[Dict[str, Dict[str, Any]], Dict[str, str]]:
-    """Load all existing firewall rules from the ``firewall-requests`` directory.
-
-    Returns a tuple of (rule_map, file_map) where rule_map maps rule names to
-    rule dictionaries and file_map maps rule names to their originating file.
-    """
     rule_map: Dict[str, Dict[str, Any]] = {}
     file_map: Dict[str, str] = {}
     for path in glob.glob("firewall-requests/*.auto.tfvars.json"):
@@ -140,9 +124,8 @@ def load_all_rules() -> Tuple[Dict[str, Dict[str, Any]], Dict[str, str]]:
     return rule_map, file_map
 
 def update_rule_fields(rule: Dict[str, Any], updates: Dict[str, Any], new_reqid: str, new_carid: str) -> Dict[str, Any]:
-    """Return a copy of ``rule`` with ``updates`` applied and a new name constructed."""
-    # Deep copy the rule to avoid mutating original or sharing references
-    updated = copy.deepcopy(rule)
+    # JSON round‑trip to deep clone the rule
+    updated = json.loads(json.dumps(rule))
     idx = updated.get("_update_index", 1)
     proto = updates.get("protocol") or updated.get("protocol", "tcp")
     ports = updates.get("ports") or updated.get("ports", [])
@@ -153,17 +136,14 @@ def update_rule_fields(rule: Dict[str, Any], updates: Dict[str, Any], new_reqid:
     carid = new_carid or old_carid
     new_name = f"AUTO-{new_reqid}-{carid}-{proto.upper()}-{','.join(ports)}-{idx}"
     updated["name"] = new_name
-    # Apply updates
     for key, value in updates.items():
         if value:
             updated[key] = value.lower() if key in {"protocol", "direction"} else value
-    # Update description with justification
     desc_just = updates.get("description") or updated.get("description", "").split("|", 1)[-1]
     updated["description"] = f"{new_name} | {desc_just.strip()}"
     return updated
 
 def compute_next_priorities(updated_count: int) -> List[int]:
-    """Determine new priority values for updated rules (≥1000)."""
     existing_priorities: List[int] = []
     for path in glob.glob("firewall-requests/*.auto.tfvars.json"):
         try:
@@ -180,7 +160,6 @@ def compute_next_priorities(updated_count: int) -> List[int]:
     return [start + i for i in range(updated_count)]
 
 def validate_rule(rule: Dict[str, Any], idx: int) -> List[str]:
-    """Validate a single firewall rule and return error messages."""
     errors: List[str] = []
     third_party_src = False
     third_party_dst = False
@@ -256,12 +235,10 @@ def validate_rule(rule: Dict[str, Any], idx: int) -> List[str]:
     return errors
 
 def parse_blocks(issue_body: str) -> List[str]:
-    """Split the update issue body into individual rule blocks."""
     blocks = re.split(r"(?:^|\n)#{0,6}\s*Rule\s*\d+\s*\n", issue_body, flags=re.IGNORECASE)
     return [b for b in blocks[1:] if b.strip()]
 
 def extract_field(block: str, label: str) -> str:
-    """Extract a field value from a rule block by its label."""
     for line in block.splitlines():
         clean = re.sub(r"[*_`~]+", "", line)
         clean = re.sub(r"^[^A-Za-z0-9]*", "", clean)
@@ -271,7 +248,6 @@ def extract_field(block: str, label: str) -> str:
     return ""
 
 def make_update_summary(idx: int, old_rule: Dict[str, Any], updates: Dict[str, Any], new_rule: Dict[str, Any]) -> str:
-    """Create a human‑readable summary of the changes applied to a rule."""
     changes: List[str] = []
     for field, label in [
         ("src_ip_ranges", "Source"), ("dest_ip_ranges", "Destination"), ("ports", "Ports"),
@@ -290,7 +266,6 @@ def make_update_summary(idx: int, old_rule: Dict[str, Any], updates: Dict[str, A
     return f"- **Rule {idx}** (`{old_rule['name']}`): " + "; ".join(changes)
 
 def main() -> None:
-    """Entry point for the rule updater."""
     global NEW_TLM_ID
     issue_body = sys.stdin.read() if len(sys.argv) < 2 else sys.argv[1]
     errors: List[str] = []
@@ -342,7 +317,8 @@ def main() -> None:
             errors.append(f"Rule {idx}: No rule found in codebase with name '{name}'.")
             continue
         original = rule_map[name]
-        to_update = copy.deepcopy(original)  # Deep copy to avoid in-place mutation
+        # Deep clone via JSON to avoid any mutation of the original rule
+        to_update = json.loads(json.dumps(original))
         to_update["_update_index"] = idx
         new_fields: Dict[str, Any] = {}
         if req["src_ip_ranges"]:
@@ -424,14 +400,13 @@ def main() -> None:
     dest_dir = "firewall-requests"
     os.makedirs(dest_dir, exist_ok=True)
     new_path = os.path.join(dest_dir, f"{new_reqid}.auto.tfvars.json")
-    # Remove any pre‑existing file with this REQID to avoid appending
+    # Always remove any existing file with this REQID before writing
     if os.path.exists(new_path):
         try:
             os.remove(new_path)
         except Exception:
             pass
     combined_rules = updated_rules
-
     tmp_new = new_path + ".tmp"
     with open(tmp_new, "w") as nf:
         json.dump({"auto_firewall_rules": combined_rules}, nf, indent=2)
@@ -454,7 +429,7 @@ def main() -> None:
     except Exception:
         pass
 
-    # Remove the old rule from the original file
+    # Remove the old rule from its original file
     for old_name, orig_path in rules_to_remove:
         try:
             with open(orig_path, "r", encoding="utf-8") as f:
