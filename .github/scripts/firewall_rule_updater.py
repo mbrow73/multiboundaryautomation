@@ -33,6 +33,7 @@ import json
 import ipaddress
 import subprocess
 from typing import Dict, List, Tuple, Any
+import copy  # Added for deep copying of rules
 
 # Allowed public ranges for Google services.
 ALLOWED_PUBLIC_RANGES = [
@@ -153,7 +154,8 @@ def update_rule_fields(rule: Dict[str, Any], updates: Dict[str, Any], new_reqid:
     avoid collisions. Description text is preserved or replaced according to
     the update request.
     """
-    updated = rule.copy()
+    # Deep copy the rule to avoid mutating the original or sharing list references.
+    updated = copy.deepcopy(rule)
     # Use the stored update index (or default to 1) to create a unique suffix.
     idx = updated.get("_update_index", 1)
     proto = updates.get("protocol") or updated.get("protocol", "tcp")
@@ -228,7 +230,7 @@ def validate_rule(rule: Dict[str, Any], idx: int) -> List[str]:
             if net == ipaddress.ip_network("0.0.0.0/0"):
                 errors.append(f"Rule {idx}: {label} may not be 0.0.0.0/0.")
                 continue
-            # Oversized prefix: /0–/23 must either be allowed public ranges or health check ranges
+            # Oversized prefix: /0–/23 must either be allowed public ranges or health‑check ranges
             if net.prefixlen < 24:
                 if not any(net.subnet_of(r) for r in ALLOWED_PUBLIC_RANGES):
                     errors.append(f"Rule {idx}: {label} '{ip}' is /{net.prefixlen}, must be /24 or smaller unless it’s a GCP health‑check range.")
@@ -534,17 +536,16 @@ def main() -> None:
     dest_dir = "firewall-requests"
     os.makedirs(dest_dir, exist_ok=True)
     new_path = os.path.join(dest_dir, f"{new_reqid}.auto.tfvars.json")
-    # Load any existing rules from the destination file; append the updated rules.
-    existing_rules: List[Dict[str, Any]] = []
+    # Always create a fresh destination file for this update.  If a file with this
+    # REQID already exists, remove it so the updated rules aren’t appended to old content.
     if os.path.exists(new_path):
         try:
-            with open(new_path) as nf:
-                existing_data = json.load(nf)
-                existing_rules = existing_data.get("auto_firewall_rules", [])
+            os.remove(new_path)
         except Exception:
-            # If the file exists but cannot be parsed, we start fresh.
-            existing_rules = []
-    combined_rules = existing_rules + updated_rules
+            pass
+    # Write only the new updated rules.
+    combined_rules = updated_rules
+
     # Write the combined rules back to the destination file.  Use a temporary
     # file then rename to avoid partial writes in the case of interruption.
     tmp_new = new_path + ".tmp"
