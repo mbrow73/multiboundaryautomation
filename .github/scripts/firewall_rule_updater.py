@@ -71,8 +71,10 @@ NEW_TLM_ID = ""
 def validate_reqid(reqid: str) -> bool:
     return bool(re.fullmatch(r"REQ\d{7,8}", reqid or ""))
 
+
 def validate_carid(carid: str) -> bool:
     return bool(re.fullmatch(r"\d{9}", carid or ""))
+
 
 def validate_ip(ip: str) -> bool:
     try:
@@ -84,6 +86,7 @@ def validate_ip(ip: str) -> bool:
     except Exception:
         return False
 
+
 def validate_port(port: str) -> bool:
     if re.fullmatch(r"\d{1,5}", port or ""):
         n = int(port)
@@ -93,8 +96,10 @@ def validate_port(port: str) -> bool:
         return 1 <= a <= b <= 65535
     return False
 
+
 def validate_protocol(proto: str) -> bool:
     return proto.lower() in {"tcp", "udp", "icmp", "sctp"}
+
 
 # Load and deep‑clone rules to avoid in‑place mutation
 def load_all_rules() -> Tuple[Dict[str, Dict[str, Any]], Dict[str, str]]:
@@ -113,6 +118,7 @@ def load_all_rules() -> Tuple[Dict[str, Dict[str, Any]], Dict[str, str]]:
                 rule_map[name] = json.loads(json.dumps(rule))  # deep clone
                 file_map[name] = path
     return rule_map, file_map
+
 
 def update_rule_fields(rule: Dict[str, Any], updates: Dict[str, Any], new_reqid: str, new_carid: str) -> Dict[str, Any]:
     updated = json.loads(json.dumps(rule))  # deep clone
@@ -133,6 +139,7 @@ def update_rule_fields(rule: Dict[str, Any], updates: Dict[str, Any], new_reqid:
     updated["description"] = f"{new_name} | {desc_just.strip()}"
     return updated
 
+
 def compute_next_priorities(updated_count: int) -> List[int]:
     existing_priorities: List[int] = []
     pattern = os.path.join(FIREWALL_DIR, "*.auto.tfvars.json")
@@ -149,6 +156,7 @@ def compute_next_priorities(updated_count: int) -> List[int]:
     max_prio = max(existing_priorities) if existing_priorities else 999
     start = max(max_prio, 999) + 1
     return [start + i for i in range(updated_count)]
+
 
 def validate_rule(rule: Dict[str, Any], idx: int) -> List[str]:
     errors: List[str] = []
@@ -225,10 +233,12 @@ def validate_rule(rule: Dict[str, Any], idx: int) -> List[str]:
         pass
     return errors
 
+
 # Parsing helpers
 def parse_blocks(issue_body: str) -> List[str]:
     blocks = re.split(r"(?:^|\n)#{0,6}\s*Rule\s*\d+\s*\n", issue_body, flags=re.IGNORECASE)
     return [b for b in blocks[1:] if b.strip()]
+
 
 def extract_field(block: str, label: str) -> str:
     for line in block.splitlines():
@@ -238,6 +248,7 @@ def extract_field(block: str, label: str) -> str:
         if m:
             return m.group(1).strip()
     return ""
+
 
 def make_update_summary(idx: int, old_rule: Dict[str, Any], updates: Dict[str, Any], new_rule: Dict[str, Any]) -> str:
     changes: List[str] = []
@@ -250,12 +261,11 @@ def make_update_summary(idx: int, old_rule: Dict[str, Any], updates: Dict[str, A
         if new_val is not None and old_val != new_val:
             old_str = ",".join(old_val) if isinstance(old_val, list) else old_val
             new_str = ",".join(new_val) if isinstance(new_val, list) else new_val
-            changes.append(f"{label}: `{old_str}` → `{new_str}`")
-    if old_rule.get("name") != new_rule.get("name"):
-        changes.append(f"Rule Name: `{old_rule['name']}` → `{new_rule['name']}`")
+            changes.append(f"{label}: '{old_str}' → '{new_str}'")
     if not changes:
-        changes = ["(No fields updated, only name/desc changed)"]
-    return f"- **Rule {idx}** (`{old_rule['name']}`): " + "; ".join(changes)
+        return f"- **Rule {idx}**: no updates applied."
+    return f"- **Rule {idx}** updated: " + "; ".join(changes)
+
 
 # Main update workflow
 def main() -> None:
@@ -390,7 +400,19 @@ def main() -> None:
         r.setdefault("enable_logging", True)
 
     os.makedirs(FIREWALL_DIR, exist_ok=True)
-    new_path = os.path.join(FIREWALL_DIR, f"{new_reqid}.auto.tfvars.json")
+    # Determine the new file path based on the original file's name.
+    # If we have any rules to remove, use the first original file name as a template
+    # and replace the old REQID with the new REQID. This preserves any additional
+    # suffixes or prefixes while changing only the REQID. If no original file is found,
+    # fall back to "<REQID>.auto.tfvars.json".
+    new_filename = None
+    if rules_to_remove:
+        _, template_path = rules_to_remove[0]
+        orig_filename = os.path.basename(template_path)
+        new_filename = re.sub(r"REQ\d{7,8}", new_reqid, orig_filename, count=1)
+    if not new_filename:
+        new_filename = f"{new_reqid}.auto.tfvars.json"
+    new_path = os.path.join(FIREWALL_DIR, new_filename)
     if os.path.exists(new_path):
         try:
             os.remove(new_path)
@@ -439,6 +461,7 @@ def main() -> None:
                 json.dump({"auto_firewall_rules": filtered}, f, indent=2)
                 f.write("\n")
             os.replace(tmp_file, orig_path)
+
 
 if __name__ == "__main__":
     main()
