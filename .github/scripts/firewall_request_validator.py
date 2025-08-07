@@ -29,7 +29,6 @@ icons.
 import re
 import sys
 import ipaddress
-import glob
 import json
 import os
 
@@ -76,13 +75,16 @@ PRIVATE_RANGES = [
     ipaddress.ip_network("192.168.0.0/16"),
 ]
 
+
 def validate_reqid(reqid: str) -> bool:
     """Validate that the REQID follows the pattern REQ followed by 7–8 digits."""
     return bool(re.fullmatch(r"REQ\d{7,8}", reqid or ""))
 
+
 def validate_carid(carid: str) -> bool:
     """Validate that the CARID is exactly 9 digits."""
     return bool(re.fullmatch(r"\d{9}", carid or ""))
+
 
 def validate_port(port: str) -> bool:
     """Validate that a port or port range is within 1–65535."""
@@ -94,12 +96,13 @@ def validate_port(port: str) -> bool:
         return 1 <= a <= b <= 65535
     return False
 
-def main():
+
+def main() -> None:
     if len(sys.argv) < 2:
         print("Usage: firewall_request_validator.py <issue_body_file>")
         sys.exit(1)
     issue = open(sys.argv[1]).read()
-    errors = []
+    errors: list[str] = []
 
     # Extract REQID and CARID
     m = re.search(r"Request ID.*?:\s*([A-Z0-9]+)", issue, re.IGNORECASE)
@@ -111,14 +114,14 @@ def main():
     if not validate_carid(carid):
         errors.append(f"❌ CARID must be exactly 9 digits. Found: '{carid}'")
 
-    # Extract TLM ID on the same line as "Third Party ID" label
+    # Extract TLM ID on the same line as the "Third Party ID" label
     m = re.search(r"Third Party ID\b.*?:[ \t]*([^\n\r]*)", issue, re.IGNORECASE)
     tlm_id = m.group(1).strip() if m else ""
 
     # Split into rule blocks. Accept headings with any number of '#'
     blocks = re.split(r"(?:^|\n)#{0,6}\s*Rule\s*\d+\s*\n", issue, flags=re.IGNORECASE)
     blocks = [b for b in blocks[1:] if b.strip()]
-    seen = set()
+    seen: set[tuple[str, str, str, str, str]] = set()
 
     for idx, block in enumerate(blocks, 1):
         # Helper to extract fields. Strip leading punctuation/emoji and Markdown formatting.
@@ -126,11 +129,11 @@ def main():
             for line in block.splitlines():
                 # Remove Markdown emphasis characters
                 clean = re.sub(r"[*_`~]+", "", line)
-                # Remove leading non‑alphanumeric characters (e.g. bullets)
+                # Remove leading non‑alphanumeric characters (e.g. bullets or emoji)
                 clean = re.sub(r"^[^A-Za-z0-9]*", "", clean)
-                m = re.match(rf"\s*{re.escape(label)}.*?:\s*(.*)", clean, re.IGNORECASE)
-                if m:
-                    return m.group(1).strip()
+                m2 = re.match(rf"\s*{re.escape(label)}.*?:\s*(.*)", clean, re.IGNORECASE)
+                if m2:
+                    return m2.group(1).strip()
             return ""
 
         src = extract("New Source IP") or extract("New Source")
@@ -177,17 +180,23 @@ def main():
                 # Oversized prefix handling (< /24)
                 if net.prefixlen < 24:
                     if not any(net.subnet_of(r) for r in ALLOWED_PUBLIC_RANGES):
-                        errors.append(f"❌ Rule {idx}: {label_name.capitalize()} '{ip_str}' is /{net.prefixlen}, must be /24 or smaller unless it’s a GCP health‑check range.")
+                        errors.append(
+                            f"❌ Rule {idx}: {label_name.capitalize()} '{ip_str}' is /{net.prefixlen}, must be /24 or smaller unless it’s a GCP health‑check range."
+                        )
                     continue
                 # Public range check (prefix >= /24)
                 if not any(net.subnet_of(r) for r in PRIVATE_RANGES):
                     if not any(net.subnet_of(r) for r in ALLOWED_PUBLIC_RANGES):
-                        errors.append(f"❌ Rule {idx}: {label_name.capitalize()} '{ip_str}' is public and not in allowed GCP ranges.")
+                        errors.append(
+                            f"❌ Rule {idx}: {label_name.capitalize()} '{ip_str}' is public and not in allowed GCP ranges."
+                        )
                     continue
 
         # Require a TLM ID only for cross‑boundary rules (one side third‑party and the other internal)
         if uses_third_party and not tlm_id and not (third_party_src and third_party_dst):
-            errors.append(f"❌ Rule {idx}: A Third Party ID (TLM ID) must be provided when using the third‑party‑peering boundary.")
+            errors.append(
+                f"❌ Rule {idx}: A Third Party ID (TLM ID) must be provided when using the third‑party‑peering boundary."
+            )
 
         # Validate ports
         for p in ports.split(","):
@@ -232,6 +241,7 @@ def main():
             print(e)
         print("VALIDATION_ERRORS_END")
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()
