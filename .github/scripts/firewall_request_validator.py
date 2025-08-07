@@ -75,6 +75,94 @@ PRIVATE_RANGES = [
     ipaddress.ip_network("192.168.0.0/16"),
 ]
 
+# -----------------------------------------------------------------------------
+# Boundary map utilities for mixed‑boundary detection
+#
+# We build a simplified boundary index from boundary_map.json so that we can
+# enforce that all source IP ranges map to a single boundary, and likewise for
+# destination ranges.  This mirrors the logic in boundary_mapper.py and allows
+# us to catch invalid mixed‑boundary combinations during validation rather than
+# failing later in the pipeline.
+
+# Default boundary name to use when mapping an IP that isn't found in the map.
+DEFAULT_BOUNDARY = "dmz"
+
+try:
+    # Compute an absolute path to boundary_map.json.  Reuse the same path
+    # discovered above when loading THIRD_PARTY_PEERING_RANGES.
+    _bm_path = boundary_map_path
+
+    def _load_boundary_map_for_validator(path: str) -> dict:
+        """Load the boundary map, stripping // and /* */ style comments."""
+        with open(path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        json_lines: list[str] = []
+        in_block = False
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("/*"):
+                in_block = True
+                continue
+            if in_block:
+                if stripped.endswith("*/"):
+                    in_block = False
+                continue
+            if '//' in line:
+                idx = line.find('//')
+                prefix = line[:idx]
+                # Only remove line comments when they are outside quoted strings.
+                if prefix.count('"') % 2 == 0:
+                    line = prefix + "\n"
+            json_lines.append(line)
+        return json.loads("".join(json_lines))
+
+    _full_boundary_map = _load_boundary_map_for_validator(_bm_path)
+    _boundary_index: list[tuple[ipaddress._BaseNetwork, str]] = []
+    for boundary, cidrs in _full_boundary_map.items():
+        for cidr in cidrs:
+            try:
+                _boundary_index.append((ipaddress.ip_network(cidr, strict=False), boundary))
+            except Exception:
+                # Skip malformed CIDR entries
+                pass
+    _boundary_index.sort(key=lambda x: x[0].prefixlen, reverse=True)
+except Exception:
+    _full_boundary_map = {}
+    _boundary_index = []
+
+def _determine_boundary_for_validator(ip_list: list[str], index: list[tuple[ipaddress._BaseNetwork, str]], default_boundary: str | None = DEFAULT_BOUNDARY) -> str:
+    """
+    Determine the boundary for a list of CIDRs.  All entries must map to the
+    same boundary.  If a CIDR is not found in the map and a default is
+    provided, the default is used.  Raises ValueError if more than one
+    boundary is detected.
+    """
+    boundaries: set[str] = set()
+    for ip_str in ip_list:
+        ip_str = ip_str.strip()
+        if not ip_str:
+            continue
+        try:
+            net = ipaddress.ip_network(ip_str, strict=False)
+        except Exception:
+            continue
+        found = None
+        for candidate, boundary in index:
+            if net.subnet_of(candidate):
+                found = boundary
+                break
+        if found is None:
+            if default_boundary is not None:
+                found = default_boundary
+            else:
+                raise ValueError(f"No boundary mapping found for {ip_str}")
+        boundaries.add(found)
+    if len(boundaries) != 1:
+        raise ValueError(f"Ambiguous boundaries {boundaries} for IP ranges {ip_list}")
+    return next(iter(boundaries))
+
+# -----------------------------------------------------------------------------
+# Basic field validators
 
 def validate_reqid(reqid: str) -> bool:
     """Validate that the REQID follows the pattern REQ followed by 7–8 digits."""
@@ -228,11 +316,33 @@ def main() -> None:
                         f"❌ Rule {idx}: Health‑check ranges (35.191.0.0/16, 130.211.0.0/22) may only appear on the source side."
                     )
 
-        # Duplicate detection within the issue (source, destination, ports, protocol, direction)
+        # Duplicate detection across rules (source, destination, ports, protocol, direction)
         key = (src.strip(), dst.strip(), ports.strip(), proto.strip(), direction.strip())
         if key in seen:
             errors.append(f"❌ Rule {idx}: Duplicate rule in request.")
         seen.add(key)
+
+        # ------------------------------------------------------------------
+        # Additional validations
+
+        # Detect duplicate IPs within the source and destination lists.
+        src_list = [s.strip() for s in src.split(",") if s.strip()]
+        dst_list = [d.strip() for d in dst.split(",") if d.strip()]
+        if len(src_list) != len(set(src_list)):
+            errors.append(f"❌ Rule {idx}: Source list contains duplicate IP/CIDR values.")
+        if len(dst_list) != len(set(dst_list)):
+            errors.append(f"❌ Rule {idx}: Destination list contains duplicate IP/CIDR values.")
+
+        # Validate that all source IPs map to a single boundary, and likewise for destination IPs.
+        if _boundary_index:
+            try:
+                _determine_boundary_for_validator(src_list, _boundary_index, DEFAULT_BOUNDARY)
+            except ValueError:
+                errors.append(f"❌ Rule {idx}: Source IP ranges span multiple boundaries; split into separate rules.")
+            try:
+                _determine_boundary_for_validator(dst_list, _boundary_index, DEFAULT_BOUNDARY)
+            except ValueError:
+                errors.append(f"❌ Rule {idx}: Destination IP ranges span multiple boundaries; split into separate rules.")
 
     # Print errors and exit non‑zero if any
     if errors:
