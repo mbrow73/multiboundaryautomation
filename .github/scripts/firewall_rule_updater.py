@@ -1,28 +1,15 @@
 #!/usr/bin/env python3
 """
-Firewall rule updater.
+Firewall rule updater with absolute path handling.
 
 This script processes "Update Firewall Rule" GitHub issues and applies
-requested changes to the JSON files under ``firewall-requests/``.  It ensures
-updated rules are written to a new per‑request JSON file (named after the
-supplied REQID) while leaving the original source files untouched.  The
-updated rules are validated in the same manner as the new rule workflow:
-REQID and CARID formats are checked, IP/CIDR syntax is validated, port
-ranges and protocols are enforced, health‑check and restricted API ranges
-are verified to be on the correct side of the rule, and duplicate rules
-within the update request are detected.  When a rule crosses the
-third‑party peering boundary, a Third‑Party ID (TLM ID) must be provided
-unless both the source and destination are third‑party networks.  Updated
-rules receive fresh priority values beginning at 1000 (or one greater than
-the current maximum priority ≥1000) so as not to collide with manual
-NetSec rules.
-
-For rules that involve a third‑party VPC, a Third‑Party ID (TLM ID) must be
-supplied in the issue.  To determine which IP ranges correspond to
-third‑party networks, this script loads ``boundary_map.json`` from the repo
-root.  All entries whose keys contain ``"third"`` are treated as third‑party
-boundaries.  If the boundary map cannot be read or contains no such
-entries, the updater falls back to the default CIDR of ``10.150.1.0/24``.
+requested changes to JSON files under ``firewall-requests/``.  All file
+operations are resolved relative to the repository root (two levels up
+from this script) to avoid accidental in‑place updates when the script
+is run from different directories.  It ensures updated rules are written
+to a new per‑request JSON file (named after the supplied REQID) while
+leaving the original source files untouched.  The updated rules are
+validated similarly to the new rule workflow.
 """
 
 import re
@@ -33,6 +20,14 @@ import json
 import ipaddress
 import subprocess
 from typing import Dict, List, Tuple, Any
+
+# ---------------- Absolute path setup ----------------
+# Get the directory where this script lives (.github/scripts)
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# Repository root is two levels above the script (.github/scripts/../../)
+REPO_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "..", ".."))
+# Directory containing firewall request files
+FIREWALL_DIR = os.path.join(REPO_ROOT, "firewall-requests")
 
 # Allowed public ranges for Google services.
 ALLOWED_PUBLIC_RANGES = [
@@ -61,9 +56,7 @@ PRIVATE_RANGES = [
 
 # Dynamically load third‑party peering ranges from boundary_map.json.
 try:
-    boundary_map_path = os.path.abspath(
-        os.path.join(os.path.dirname(__file__), "..", "..", "boundary_map.json")
-    )
+    boundary_map_path = os.path.join(REPO_ROOT, "boundary_map.json")
     with open(boundary_map_path, "r", encoding="utf-8") as f:
         _boundary_map = json.load(f)
     THIRD_PARTY_PEERING_RANGES = [
@@ -79,6 +72,7 @@ except Exception:
 
 NEW_TLM_ID = ""
 
+# ---------------- Validation helpers ----------------
 def validate_reqid(reqid: str) -> bool:
     return bool(re.fullmatch(r"REQ\d{7,8}", reqid or ""))
 
@@ -107,10 +101,13 @@ def validate_port(port: str) -> bool:
 def validate_protocol(proto: str) -> bool:
     return proto.lower() in {"tcp", "udp", "icmp", "sctp"}
 
+# ---------------- Loading and updating rules ----------------
 def load_all_rules() -> Tuple[Dict[str, Dict[str, Any]], Dict[str, str]]:
+    """Load all existing firewall rules from the firewall-requests directory using absolute paths."""
     rule_map: Dict[str, Dict[str, Any]] = {}
     file_map: Dict[str, str] = {}
-    for path in glob.glob("firewall-requests/*.auto.tfvars.json"):
+    pattern = os.path.join(FIREWALL_DIR, "*.auto.tfvars.json")
+    for path in glob.glob(pattern):
         try:
             with open(path) as f:
                 data = json.load(f)
@@ -124,8 +121,8 @@ def load_all_rules() -> Tuple[Dict[str, Dict[str, Any]], Dict[str, str]]:
     return rule_map, file_map
 
 def update_rule_fields(rule: Dict[str, Any], updates: Dict[str, Any], new_reqid: str, new_carid: str) -> Dict[str, Any]:
-    # JSON round‑trip to deep clone the rule
-    updated = json.loads(json.dumps(rule))
+    """Return a deep copy of `rule` with updates applied and a new name constructed."""
+    updated = json.loads(json.dumps(rule))  # round-trip JSON to deep-copy
     idx = updated.get("_update_index", 1)
     proto = updates.get("protocol") or updated.get("protocol", "tcp")
     ports = updates.get("ports") or updated.get("ports", [])
@@ -144,8 +141,10 @@ def update_rule_fields(rule: Dict[str, Any], updates: Dict[str, Any], new_reqid:
     return updated
 
 def compute_next_priorities(updated_count: int) -> List[int]:
+    """Determine the next available priority values (≥1000) for the updated rules."""
     existing_priorities: List[int] = []
-    for path in glob.glob("firewall-requests/*.auto.tfvars.json"):
+    pattern = os.path.join(FIREWALL_DIR, "*.auto.tfvars.json")
+    for path in glob.glob(pattern):
         try:
             with open(path) as f:
                 data = json.load(f)
@@ -160,6 +159,7 @@ def compute_next_priorities(updated_count: int) -> List[int]:
     return [start + i for i in range(updated_count)]
 
 def validate_rule(rule: Dict[str, Any], idx: int) -> List[str]:
+    """Validate a single firewall rule and return error messages."""
     errors: List[str] = []
     third_party_src = False
     third_party_dst = False
@@ -234,6 +234,7 @@ def validate_rule(rule: Dict[str, Any], idx: int) -> List[str]:
         pass
     return errors
 
+# ---------------- Parsing helpers ----------------
 def parse_blocks(issue_body: str) -> List[str]:
     blocks = re.split(r"(?:^|\n)#{0,6}\s*Rule\s*\d+\s*\n", issue_body, flags=re.IGNORECASE)
     return [b for b in blocks[1:] if b.strip()]
@@ -265,7 +266,9 @@ def make_update_summary(idx: int, old_rule: Dict[str, Any], updates: Dict[str, A
         changes = ["(No fields updated, only name/desc changed)"]
     return f"- **Rule {idx}** (`{old_rule['name']}`): " + "; ".join(changes)
 
+# ---------------- Main update workflow ----------------
 def main() -> None:
+    """Entry point for the rule updater."""
     global NEW_TLM_ID
     issue_body = sys.stdin.read() if len(sys.argv) < 2 else sys.argv[1]
     errors: List[str] = []
@@ -317,8 +320,7 @@ def main() -> None:
             errors.append(f"Rule {idx}: No rule found in codebase with name '{name}'.")
             continue
         original = rule_map[name]
-        # Deep clone via JSON to avoid any mutation of the original rule
-        to_update = json.loads(json.dumps(original))
+        to_update = json.loads(json.dumps(original))  # deep clone via JSON
         to_update["_update_index"] = idx
         new_fields: Dict[str, Any] = {}
         if req["src_ip_ranges"]:
@@ -397,10 +399,9 @@ def main() -> None:
         r["priority"] = next_priorities[i]
         r.setdefault("enable_logging", True)
 
-    dest_dir = "firewall-requests"
-    os.makedirs(dest_dir, exist_ok=True)
-    new_path = os.path.join(dest_dir, f"{new_reqid}.auto.tfvars.json")
-    # Always remove any existing file with this REQID before writing
+    # Use absolute path for the new file
+    os.makedirs(FIREWALL_DIR, exist_ok=True)
+    new_path = os.path.join(FIREWALL_DIR, f"{new_reqid}.auto.tfvars.json")
     if os.path.exists(new_path):
         try:
             os.remove(new_path)
@@ -418,18 +419,17 @@ def main() -> None:
             f.write(line + "\n")
 
     try:
-        map_file = "boundary_map.json"
+        map_file = os.path.join(REPO_ROOT, "boundary_map.json")
         if os.path.exists(new_path):
             subprocess.run([
                 sys.executable,
-                os.path.join(os.path.dirname(__file__), "boundary_mapper.py"),
+                os.path.join(SCRIPT_DIR, "boundary_mapper.py"),
                 "--map-file", map_file,
                 "--json-file", new_path,
             ], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
         pass
 
-    # Remove the old rule from its original file
     for old_name, orig_path in rules_to_remove:
         try:
             with open(orig_path, "r", encoding="utf-8") as f:
