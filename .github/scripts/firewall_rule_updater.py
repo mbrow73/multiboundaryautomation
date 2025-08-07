@@ -314,7 +314,11 @@ def extract_field(block: str, label: str) -> str:
     heading.
     """
     for line in block.splitlines():
-        m = re.match(rf"\s*{re.escape(label)}.*?:\s*(.*)", line, re.IGNORECASE)
+        # Remove common Markdown formatting characters (bold/italic) that may
+        # surround the label, e.g. "**New Port(s)**".  This allows the
+        # following regex to match the label reliably regardless of decoration.
+        clean = re.sub(r"[*_`~]+", "", line)
+        m = re.match(rf"\s*{re.escape(label)}.*?:\s*(.*)", clean, re.IGNORECASE)
         if m:
             return m.group(1).strip()
     return ""
