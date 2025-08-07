@@ -430,8 +430,8 @@ def main() -> None:
             errors.append(f"Rule {idx}: No rule found in codebase with name '{name}'.")
             continue
         original = rule_map[name]
-        # Work on a copy so we don't mutate the cached rule_map entry.
-        to_update = original.copy()
+        # Work on a deep copy so we don't mutate the cached rule_map entry or any of its nested lists.
+        to_update = copy.deepcopy(original)
         # Assign a unique update index; use the order of the update block to prevent
         # collisions when constructing new names.  This differs from the original
         # updater which derived the index from the rule's position within its file.
