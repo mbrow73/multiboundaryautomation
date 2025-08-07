@@ -108,12 +108,12 @@ jobs:
               svpc=""; dvpc="";
               n=split($0, lines, "\n");
               for(i=1;i<=n;i++){
-                if(lines[i] ~ /New Source IP/)         { sub(/.*: /,"",lines[i]); gsub(/^[ \t]+|[ \t]+$/,"",lines[i]); src=lines[i]; }
-                if(lines[i] ~ /New Destination IP/)    { sub(/.*: /,"",lines[i]); gsub(/^[ \t]+|[ \t]+$/,"",lines[i]); dst=lines[i]; }
-                if(lines[i] ~ /New Port/)              { sub(/.*: /,"",lines[i]); gsub(/^[ \t]+|[ \t]+$/,"",lines[i]); ports=lines[i]; }
-                if(lines[i] ~ /New Protocol/)          { sub(/.*: /,"",lines[i]); gsub(/^[ \t]+|[ \t]+$/,"",lines[i]); proto=lines[i]; }
-                if(lines[i] ~ /New Direction/)         { sub(/.*: /,"",lines[i]); gsub(/^[ \t]+|[ \t]+$/,"",lines[i]); dir=lines[i]; }
-                if(lines[i] ~ /New Business Justification/) { sub(/.*: /,"",lines[i]); gsub(/^[ \t]+|[ \t]+$/,"",lines[i]); just=lines[i]; }
+                if(lines[i] ~ /New Source IP/)         { sub(/.*: */,"",lines[i]); gsub(/^[ \t]+|[ \t]+$/,"",lines[i]); src=lines[i]; }
+                if(lines[i] ~ /New Destination IP/)    { sub(/.*: */,"",lines[i]); gsub(/^[ \t]+|[ \t]+$/,"",lines[i]); dst=lines[i]; }
+                if(lines[i] ~ /New Port/)              { sub(/.*: */,"",lines[i]); gsub(/^[ \t]+|[ \t]+$/,"",lines[i]); ports=lines[i]; }
+                if(lines[i] ~ /New Protocol/)          { sub(/.*: */,"",lines[i]); gsub(/^[ \t]+|[ \t]+$/,"",lines[i]); proto=lines[i]; }
+                if(lines[i] ~ /New Direction/)         { sub(/.*: */,"",lines[i]); gsub(/^[ \t]+|[ \t]+$/,"",lines[i]); dir=lines[i]; }
+                if(lines[i] ~ /New Business Justification/) { sub(/.*: */,"",lines[i]); gsub(/^[ \t]+|[ \t]+$/,"",lines[i]); just=lines[i]; }
               }
               rulename = sprintf("AUTO-%s-%s-%s-%s-%d", reqid, carid, toupper(proto), ports, NR);
               desc     = rulename " | " just;
