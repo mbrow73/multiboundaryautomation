@@ -318,6 +318,10 @@ def extract_field(block: str, label: str) -> str:
         # surround the label, e.g. "**New Port(s)**".  This allows the
         # following regex to match the label reliably regardless of decoration.
         clean = re.sub(r"[*_`~]+", "", line)
+        # Remove any leading punctuation or emoji (e.g. bullet characters) so
+        # that labels prefaced with icons like "🔹" are still recognised.  We
+        # strip characters until we hit a letter or digit.
+        clean = re.sub(r"^[^A-Za-z0-9]*", "", clean)
         m = re.match(rf"\s*{re.escape(label)}.*?:\s*(.*)", clean, re.IGNORECASE)
         if m:
             return m.group(1).strip()
@@ -572,9 +576,9 @@ def main() -> None:
     # Remove the old rules from their original files now that the updated
     # versions have been written.  We iterate over the collected list of
     # (rule_name, file_path) pairs, load each file, filter out the old rule
-    # by its name, and write the file back.  If a file becomes empty, we
-    # leave it in place with an empty auto_firewall_rules list so that the
-    # workflow can still operate on it in future.
+    # by its name, and write the file back.  If a file becomes empty,
+    # delete it entirely rather than leaving a zero‑rule JSON stub.  This
+    # keeps the repository tidy and avoids committing empty request files.
     for old_name, orig_path in rules_to_remove:
         try:
             with open(orig_path, "r", encoding="utf-8") as f:
@@ -583,8 +587,16 @@ def main() -> None:
             continue
         rules = data.get("auto_firewall_rules", [])
         filtered = [r for r in rules if r.get("name") != old_name]
-        # Only rewrite the file if a rule was actually removed
+        # Only rewrite/delete the file if a rule was actually removed
         if len(filtered) != len(rules):
+            # If no auto rules remain, remove the file completely.
+            if not filtered:
+                try:
+                    os.remove(orig_path)
+                except FileNotFoundError:
+                    pass
+                continue
+            # Otherwise, rewrite the file with the remaining rules
             tmp_file = orig_path + ".tmp"
             with open(tmp_file, "w", encoding="utf-8") as f:
                 json.dump({"auto_firewall_rules": filtered}, f, indent=2)
