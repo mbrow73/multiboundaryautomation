@@ -1,4 +1,4 @@
-name: 🔒 Process Firewall Requests
+name:  Process Firewall Requests
 
 on:
   issues:
@@ -26,7 +26,7 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: 🔎 Validate Issue Format and Data
+      - name:  Validate Issue Format and Data
         id: validate
         shell: bash
         run: |
@@ -56,7 +56,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 📊 Determine current max priority
+      - name:  Determine current max priority
         id: max_priority
         shell: bash
         run: |
@@ -82,7 +82,7 @@ jobs:
           echo "$MAX"           >> $GITHUB_OUTPUT
           echo "EOF"            >> $GITHUB_OUTPUT
 
-      - name: 📝 Parse Issue, Generate Per-REQID JSON and Rule Summary
+      - name:  Parse Issue, Generate Per-REQID JSON and Rule Summary
         id: parse_and_write
         shell: bash
         run: |
@@ -121,10 +121,30 @@ jobs:
                 if(lines[i] ~ /New Direction/)         { sub(/.*: */,"",lines[i]); gsub(/^[ \t]+|[ \t]+$/,"",lines[i]); dir=lines[i]; }
                 if(lines[i] ~ /New Business Justification/) { sub(/.*: */,"",lines[i]); gsub(/^[ \t]+|[ \t]+$/,"",lines[i]); just=lines[i]; }
               }
+              # build arrays by splitting on commas, trimming whitespace
+              function build_list(str,   arr, j, list) {
+                gsub(/,[[:space:]]*/, ",", str)
+                split(str, arr, ",")
+                list=""
+                for(j=1; j<=length(arr); j++) {
+                  gsub(/^[ \t]+|[ \t]+$/, "", arr[j])
+                  if(arr[j] != "") {
+                    if(list != "") list = list ","
+                    list = list "\"" arr[j] "\""
+                  }
+                }
+                return list
+              }
+              src_list  = build_list(src)
+              dst_list  = build_list(dst)
+              port_list = build_list(ports)
+
+              # remove spaces for rulename ports
+              gsub(/,[[:space:]]*/, ",", ports)
               rulename = sprintf("AUTO-%s-%s-%s-%s-%d", reqid, carid, toupper(proto), ports, NR);
               desc     = rulename " | " just;
-              printf("{\"name\":\"%s\",\"description\":\"%s\",\"direction\":\"%s\",\"src_vpc\":\"%s\",\"dest_vpc\":\"%s\",\"src_ip_ranges\":[\"%s\"],\"dest_ip_ranges\":[\"%s\"],\"ports\":[\"%s\"],\"protocol\":\"%s\",\"priority\":%d,\"enable_logging\":true}\n", \
-                     rulename, desc, dir, svpc, dvpc, src, dst, ports, tolower(proto), maxp+NR) >> "rules.json";
+              printf("{\"name\":\"%s\",\"description\":\"%s\",\"direction\":\"%s\",\"src_vpc\":\"%s\",\"dest_vpc\":\"%s\",\"src_ip_ranges\":[%s],\"dest_ip_ranges\":[%s],\"ports\":[%s],\"protocol\":\"%s\",\"priority\":%d,\"enable_logging\":true}\n", \
+                     rulename, desc, dir, svpc, dvpc, src_list, dst_list, port_list, tolower(proto), maxp+NR) >> "rules.json";
               rule_flow = sprintf("- **Rule %d:** %s → %s on %s/%s\n    Justification: %s\n", \
                                   NR, src, dst, tolower(proto), ports, just);
               print rule_flow >> "rules_summary.txt";
@@ -142,8 +162,7 @@ jobs:
           echo "$SUMMARY"       >> $GITHUB_OUTPUT
           echo "EOF"            >> $GITHUB_OUTPUT
 
-
-      - name: 🗺️ Map IPs to Boundaries
+      - name: ️ Map IPs to Boundaries
         # Use the boundary_map.json file to automatically determine which VPC boundary
         # each source/destination IP range belongs to.  This script updates the
         # generated .auto.tfvars.json file in place, populating the src_vpc and
@@ -181,7 +200,7 @@ jobs:
             firewall-requests/${{ steps.parse_and_write.outputs.REQID }}.auto.tfvars.json
           base: main
 
-      - name: 💬 Comment PR Link to Issue
+      - name:  Comment PR Link to Issue
         if: steps.cpr.outputs.pull-request-url != ''
         uses: actions/github-script@v6
         with:
