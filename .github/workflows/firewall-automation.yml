@@ -108,6 +108,22 @@ jobs:
 
           # build JSON + summary, trimming whitespace on each extracted field
           echo "$RULES" | awk -v carid="$CARID" -v reqid="$REQID" -v maxp="$MAX_PRIORITY" '
+            # Define a helper function at the top level.  This function splits a comma‑separated
+            # string into a quoted, comma‑delimited list suitable for JSON arrays.
+            function build_list(str,   arr, j, list) {
+              # Normalize spacing around commas
+              gsub(/,[[:space:]]*/, ",", str)
+              split(str, arr, ",")
+              list=""
+              for(j=1; j<=length(arr); j++) {
+                gsub(/^[ \t]+|[ \t]+$/, "", arr[j])
+                if(arr[j] != "") {
+                  if(list != "") list = list ","
+                  list = list "\"" arr[j] "\""
+                }
+              }
+              return list
+            }
             BEGIN { RS="@@@"; }
             NF {
               src=""; dst=""; ports=""; proto=""; dir=""; just="";
@@ -120,20 +136,6 @@ jobs:
                 if(lines[i] ~ /New Protocol/)          { sub(/.*: */,"",lines[i]); gsub(/^[ \t]+|[ \t]+$/,"",lines[i]); proto=lines[i]; }
                 if(lines[i] ~ /New Direction/)         { sub(/.*: */,"",lines[i]); gsub(/^[ \t]+|[ \t]+$/,"",lines[i]); dir=lines[i]; }
                 if(lines[i] ~ /New Business Justification/) { sub(/.*: */,"",lines[i]); gsub(/^[ \t]+|[ \t]+$/,"",lines[i]); just=lines[i]; }
-              }
-              # build arrays by splitting on commas, trimming whitespace
-              function build_list(str,   arr, j, list) {
-                gsub(/,[[:space:]]*/, ",", str)
-                split(str, arr, ",")
-                list=""
-                for(j=1; j<=length(arr); j++) {
-                  gsub(/^[ \t]+|[ \t]+$/, "", arr[j])
-                  if(arr[j] != "") {
-                    if(list != "") list = list ","
-                    list = list "\"" arr[j] "\""
-                  }
-                }
-                return list
               }
               src_list  = build_list(src)
               dst_list  = build_list(dst)
