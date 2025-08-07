@@ -8,9 +8,9 @@
  * treated differently from intra‑VPC traffic.  An action of
  * `apply_security_profile_group` is automatically applied to any rule
  * where the source and destination VPC differ (except for the special
- * intranet→on‑prem case).  Intra‑VPC traffic is always allowed.  The
- * security profile group ID used for inspection comes from the
- * `security_profile_group_id` input variable.
+ * intranet→on‑prem case).  Intra‑VPC traffic is normally treated as
+ * internal and does not use inspection.  Health‑check and restricted‑API
+ * ranges are special‑cased to emit only a single rule.
  */
 
 /*
@@ -48,8 +48,9 @@ resource "google_compute_network_firewall_policy_association" "attach" {
  * intranet boundary before leaving the cloud.  The logic below implements
  * the following behaviour:
  *
- *   • Health‑check and restricted‑API ranges (src_vpc == dest_vpc) result in
- *     a single rule on that boundary; the requested direction is preserved.
+ *   • Health‑check and restricted‑API ranges result in a single rule on
+ *     the appropriate boundary; the `direction` set by the boundary mapper
+ *     (INGRESS for health‑check, EGRESS for restricted‑API) is preserved.
  *
  *   • onprem → intranet         → one ingress rule on intranet.
  *   • intranet → onprem         → one egress rule on intranet.
@@ -61,21 +62,47 @@ resource "google_compute_network_firewall_policy_association" "attach" {
  *   • All other cross‑boundary traffic → two rules: an ingress rule on
  *     the destination VPC and an egress rule on the source VPC.  The
  *     egress rule is inspected (apply_security = true).
+ *
+ *   • Intra‑VPC traffic (r.src_vpc == r.dest_vpc) normally generates two
+ *     rules (ingress and egress) without inspection.  However, if the
+ *     `direction` field has been set (by the boundary mapper for health‑check
+ *     or restricted ranges), a single rule is emitted with that direction.
  */
 locals {
   expanded_rules = flatten([
     for r in var.inet_firewall_rules : (
-      # Same boundary (health‑check or restricted‑API).  Use caller-supplied direction.
-      lower(r.src_vpc) == lower(r.dest_vpc) ? [
-        {
-          key                = "${r.name}-${(lower(r.dest_vpc) == "onprem" ? "intranet" : lower(r.dest_vpc))}-dest"
-          policy             = lower(r.dest_vpc) == "onprem" ? "intranet" : lower(r.dest_vpc)
-          suffix             = "dest"
-          direction_override = (trimspace(r.direction) != "" ? upper(r.direction) : "INGRESS")
-          apply_security     = false
-          rule               = r
-        }
-      ] :
+      # Same boundary: if direction is unset, create both ingress and egress;
+      # otherwise preserve the caller‑supplied direction (used for health‑check
+      # and restricted‑API ranges).
+      lower(r.src_vpc) == lower(r.dest_vpc) ? (
+        trimspace(r.direction) == "" ? [
+          {
+            key                = "${r.name}-${(lower(r.dest_vpc) == "onprem" ? "intranet" : lower(r.dest_vpc))}-dest"
+            policy             = lower(r.dest_vpc) == "onprem" ? "intranet" : lower(r.dest_vpc)
+            suffix             = "dest"
+            direction_override = "INGRESS"
+            apply_security     = false
+            rule               = r
+          },
+          {
+            key                = "${r.name}-${(lower(r.src_vpc) == "onprem" ? "intranet" : lower(r.src_vpc))}-src"
+            policy             = lower(r.src_vpc) == "onprem" ? "intranet" : lower(r.src_vpc)
+            suffix             = "src"
+            direction_override = "EGRESS"
+            apply_security     = false
+            rule               = r
+          }
+        ] : [
+          {
+            key                = "${r.name}-${(lower(r.dest_vpc) == "onprem" ? "intranet" : lower(r.dest_vpc))}-dest"
+            policy             = lower(r.dest_vpc) == "onprem" ? "intranet" : lower(r.dest_vpc)
+            suffix             = "dest"
+            direction_override = upper(trimspace(r.direction))
+            apply_security     = false
+            rule               = r
+          }
+        ]
+      ) :
       # onprem → intranet: ingress rule on intranet
       (lower(r.src_vpc) == "onprem" && lower(r.dest_vpc) == "intranet") ? [
         {
@@ -129,7 +156,7 @@ locals {
           direction_override = (
             lower(r.dest_vpc) == "onprem" ? "EGRESS" : (
               lower(r.dest_vpc) == lower(r.src_vpc) ?
-                (trimspace(r.direction) != "" ? upper(r.direction) : "INGRESS") :
+                (trimspace(r.direction) != "" ? upper(trimspace(r.direction)) : "INGRESS") :
                 "INGRESS"
             )
           )

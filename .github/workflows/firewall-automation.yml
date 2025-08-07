@@ -62,8 +62,14 @@ jobs:
         run: |
           mkdir -p firewall-requests
           if compgen -G "firewall-requests/*.auto.tfvars.json" > /dev/null; then
-            MAX=$(jq -s '[ .[].auto_firewall_rules[].priority ] | max' firewall-requests/*.auto.tfvars.json)
+            # Use jq to find the maximum priority across all files.  Guard against
+            # null or empty results by providing a default of 999.
+            MAX=$(jq -s '[ .[].auto_firewall_rules[].priority // empty ] | max // 999' firewall-requests/*.auto.tfvars.json)
           else
+            MAX=999
+          fi
+          # jq may return null or an empty string if no numeric priorities are found.
+          if [[ -z "$MAX" || "$MAX" == "null" ]]; then
             MAX=999
           fi
           echo "MAX_PRIORITY<<EOF" >> $GITHUB_OUTPUT
@@ -99,18 +105,13 @@ jobs:
             BEGIN { RS="@@@"; }
             NF {
               src=""; dst=""; ports=""; proto=""; dir=""; just="";
-              # We no longer expect requestors to specify VPC boundaries.  These
-              # fields will be computed automatically via boundary_mapper.py.
-              # Initialize source/destination VPCs to empty strings.
               svpc=""; dvpc="";
               n=split($0, lines, "\n");
               for(i=1;i<=n;i++){
-                # Capture IP/CIDR fields specifically; avoid matching VPC lines
                 if(lines[i] ~ /New Source IP/)         { sub(/.*: /,"",lines[i]); gsub(/^[ \t]+|[ \t]+$/,"",lines[i]); src=lines[i]; }
                 if(lines[i] ~ /New Destination IP/)    { sub(/.*: /,"",lines[i]); gsub(/^[ \t]+|[ \t]+$/,"",lines[i]); dst=lines[i]; }
                 if(lines[i] ~ /New Port/)              { sub(/.*: /,"",lines[i]); gsub(/^[ \t]+|[ \t]+$/,"",lines[i]); ports=lines[i]; }
                 if(lines[i] ~ /New Protocol/)          { sub(/.*: /,"",lines[i]); gsub(/^[ \t]+|[ \t]+$/,"",lines[i]); proto=lines[i]; }
-                # Direction is no longer requested from users.  If present, capture but leave empty otherwise.
                 if(lines[i] ~ /New Direction/)         { sub(/.*: /,"",lines[i]); gsub(/^[ \t]+|[ \t]+$/,"",lines[i]); dir=lines[i]; }
                 if(lines[i] ~ /New Business Justification/) { sub(/.*: /,"",lines[i]); gsub(/^[ \t]+|[ \t]+$/,"",lines[i]); just=lines[i]; }
               }
@@ -118,7 +119,6 @@ jobs:
               desc     = rulename " | " just;
               printf("{\"name\":\"%s\",\"description\":\"%s\",\"direction\":\"%s\",\"src_vpc\":\"%s\",\"dest_vpc\":\"%s\",\"src_ip_ranges\":[\"%s\"],\"dest_ip_ranges\":[\"%s\"],\"ports\":[\"%s\"],\"protocol\":\"%s\",\"priority\":%d,\"enable_logging\":true}\n", \
                      rulename, desc, dir, svpc, dvpc, src, dst, ports, tolower(proto), maxp+NR) >> "rules.json";
-              # Build human-readable summary.  Omit the direction since it is now determined automatically.
               rule_flow = sprintf("- **Rule %d:** %s → %s on %s/%s\n    Justification: %s\n", \
                                   NR, src, dst, tolower(proto), ports, just);
               print rule_flow >> "rules_summary.txt";
@@ -136,6 +136,7 @@ jobs:
           echo "$SUMMARY"       >> $GITHUB_OUTPUT
           echo "EOF"            >> $GITHUB_OUTPUT
 
+
       - name: 🗺️ Map IPs to Boundaries
         # Use the boundary_map.json file to automatically determine which VPC boundary
         # each source/destination IP range belongs to.  This script updates the
@@ -143,9 +144,6 @@ jobs:
         # dest_vpc fields for every rule based on the defined CIDR mappings.
         shell: bash
         run: |
-          # Assign a default boundary of 'dmz' for any IP ranges not covered by
-          # the boundary_map.json.  You can adjust this value or extend
-          # boundary_map.json to cover additional networks.
           python3 .github/scripts/boundary_mapper.py \
             --map-file boundary_map.json \
             --json-file firewall-requests/${{ steps.parse_and_write.outputs.REQID }}.auto.tfvars.json \
