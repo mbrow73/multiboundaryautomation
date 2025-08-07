@@ -49,7 +49,7 @@ PRIVATE_RANGES = [
     ipaddress.ip_network("192.168.0.0/16"),
 ]
 
-# Load third‑party boundaries
+# Load third‑party boundaries and prepare boundary map for validation
 try:
     boundary_map_path = os.path.join(REPO_ROOT, "boundary_map.json")
     with open(boundary_map_path, "r", encoding="utf-8") as f:
@@ -64,6 +64,70 @@ try:
         THIRD_PARTY_PEERING_RANGES = [ipaddress.ip_network("10.150.1.0/24")]
 except Exception:
     THIRD_PARTY_PEERING_RANGES = [ipaddress.ip_network("10.150.1.0/24")]
+
+# -----------------------------------------------------------------------------
+# Boundary detection helpers
+#
+# When validating updates, we need to ensure that the list of source or
+# destination CIDRs does not mix boundaries (e.g. intranet with on‑prem) and
+# does not contain duplicate values.  To do this we build an index of the
+# networks defined in the boundary_map.json file.  Any CIDR that does not
+# match one of the defined networks is assigned to the special boundary
+# "unknown".  This allows the validator to flag mixes of unknown and known
+# boundaries as invalid.
+
+# Default boundary used when an IP/CIDR does not match any defined boundary.
+DEFAULT_BOUNDARY = "unknown"
+
+def _build_boundary_index(boundary_map: Dict[str, List[str]]) -> List[Tuple[ipaddress.IPv4Network, str]]:
+    """Build a list of (network, boundary_name) tuples sorted by prefix length.
+
+    The list is sorted longest‑prefix first so that more specific networks
+    override broader ones when determining the boundary for a CIDR.
+    """
+    index: List[Tuple[ipaddress.IPv4Network, str]] = []
+    for name, cidrs in boundary_map.items():
+        # Skip entries with no CIDRs or malformed entries
+        if not isinstance(cidrs, list):
+            continue
+        for cidr in cidrs:
+            try:
+                net = ipaddress.ip_network(str(cidr), strict=False)
+            except Exception:
+                continue
+            index.append((net, name))
+    # Sort by decreasing prefix length so the most specific match is found first
+    index.sort(key=lambda t: t[0].prefixlen, reverse=True)
+    return index
+
+# Build the boundary index once at import time.  If boundary_map.json failed
+# to load, `_boundary_map` will be undefined; in that case, use an empty dict.
+try:
+    _BOUNDARY_INDEX = _build_boundary_index(_boundary_map)
+except Exception:
+    _BOUNDARY_INDEX = []
+
+def _determine_boundary_for_validator(cidr: str) -> str:
+    """Determine which boundary a given CIDR belongs to for validation purposes.
+
+    Returns the boundary name if found in the boundary index; otherwise
+    returns DEFAULT_BOUNDARY.  This function expects CIDR strings that have
+    already been validated by `validate_ip`.
+    """
+    try:
+        ip_net = ipaddress.ip_network(cidr, strict=False)
+    except Exception:
+        return DEFAULT_BOUNDARY
+    for net, name in _BOUNDARY_INDEX:
+        # If the IP network is fully contained within a defined boundary network,
+        # return that boundary name.
+        try:
+            if ip_net.subnet_of(net):
+                return name
+        except Exception:
+            # Fall through on any comparison errors
+            continue
+    return DEFAULT_BOUNDARY
 
 NEW_TLM_ID = ""
 
@@ -160,6 +224,34 @@ def compute_next_priorities(updated_count: int) -> List[int]:
 
 def validate_rule(rule: Dict[str, Any], idx: int) -> List[str]:
     errors: List[str] = []
+    # ------------------------------------------------------------------
+    # Detect duplicate IPs and mixed boundaries within source and
+    # destination lists.  If either list contains duplicate CIDRs or
+    # references multiple network boundaries, this rule is invalid.
+    src_list = rule.get("src_ip_ranges", []) or []
+    dest_list = rule.get("dest_ip_ranges", []) or []
+    # Detect duplicates in source and destination lists
+    if len(src_list) != len(set(src_list)):
+        errors.append(f"Rule {idx}: Source list contains duplicate IP/CIDR values.")
+    if len(dest_list) != len(set(dest_list)):
+        errors.append(f"Rule {idx}: Destination list contains duplicate IP/CIDR values.")
+    # Check that all source CIDRs map to the same boundary
+    if src_list:
+        try:
+            src_boundaries = set(_determine_boundary_for_validator(ip) for ip in src_list if validate_ip(ip))
+        except Exception:
+            src_boundaries = {DEFAULT_BOUNDARY}
+        # If more than one distinct boundary, the rule spans multiple boundaries
+        if len(src_boundaries) > 1:
+            errors.append(f"Rule {idx}: Source IP ranges span multiple boundaries; split into separate updates.")
+    # Check that all destination CIDRs map to the same boundary
+    if dest_list:
+        try:
+            dest_boundaries = set(_determine_boundary_for_validator(ip) for ip in dest_list if validate_ip(ip))
+        except Exception:
+            dest_boundaries = {DEFAULT_BOUNDARY}
+        if len(dest_boundaries) > 1:
+            errors.append(f"Rule {idx}: Destination IP ranges span multiple boundaries; split into separate updates.")
     third_party_src = False
     third_party_dst = False
     for field in ["src_ip_ranges", "dest_ip_ranges"]:
