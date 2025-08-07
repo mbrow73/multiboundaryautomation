@@ -384,22 +384,13 @@ def main() -> None:
             "description": extract_field(block, "New Business Justification"),
         })
 
-    # Detect duplicate rule definitions within the update request.  Duplicate
-    # definitions (same src, dst, ports, protocol, direction) are likely an
-    # accidental repetition and should be rejected.
-    seen_keys = set()
-    for req in update_reqs:
-        key = (
-            tuple(req.get("src_ip_ranges", [])),
-            tuple(req.get("dest_ip_ranges", [])),
-            tuple(req.get("ports", [])),
-            (req.get("protocol") or "").lower(),
-            (req.get("direction") or "").upper(),
-        )
-        if key in seen_keys:
-            errors.append(f"Rule {req['idx']}: Duplicate rule in update request.")
-        else:
-            seen_keys.add(key)
+    # Duplicate detection will be performed later on the fully constructed rules.
+    # We defer it until after applying updates so that we can take the existing
+    # src/dest IP ranges, ports, protocol and direction into account.  This
+    # prevents false positives when a user only provides a subset of fields
+    # (e.g. updating only the port) which would otherwise appear identical at
+    # this stage if their provided fields are the same.  See the updated rule
+    # duplicate check below for details.
 
     if errors:
         print("VALIDATION_ERRORS_START")
@@ -411,6 +402,11 @@ def main() -> None:
     # Load all existing rules to build a mapping of names to rule definitions.
     rule_map, file_map = load_all_rules()
     updated_rules: List[Dict[str, Any]] = []
+
+    # Track keys for duplicate detection on fully updated rules.  Keys are
+    # constructed from the final src/dest IP ranges, ports, protocol and
+    # direction after applying the update.  We use a set to detect duplicates.
+    updated_keys: set = set()
 
     for req in update_reqs:
         idx = req["idx"]
@@ -471,9 +467,22 @@ def main() -> None:
         errs = validate_rule(updated_rule, idx)
         if errs:
             errors.extend(errs)
-        else:
-            updated_rules.append(updated_rule)
-            summaries.append(make_update_summary(idx, to_update, req, updated_rule))
+            continue
+        # Construct a duplicate detection key using the final values.  We use
+        # lower/upper casing to normalise protocol and direction for comparison.
+        dup_key = (
+            tuple(updated_rule.get("src_ip_ranges", [])),
+            tuple(updated_rule.get("dest_ip_ranges", [])),
+            tuple(updated_rule.get("ports", [])),
+            (updated_rule.get("protocol") or "").lower(),
+            (updated_rule.get("direction") or "").upper(),
+        )
+        if dup_key in updated_keys:
+            errors.append(f"Rule {idx}: Duplicate rule in update request.")
+            continue
+        updated_keys.add(dup_key)
+        updated_rules.append(updated_rule)
+        summaries.append(make_update_summary(idx, to_update, req, updated_rule))
 
     if errors:
         print("VALIDATION_ERRORS_START")
