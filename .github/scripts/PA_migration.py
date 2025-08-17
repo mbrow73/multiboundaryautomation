@@ -321,10 +321,10 @@ def generate_issue_md(rules_csv, objs_csv, groups_csv, services_csv,
 
 def main():
     p = argparse.ArgumentParser(description="Convert Panorama CSVs to GitHub firewall-request issue markdown.")
-    p.add_argument("--rules",    default="pa_rules.csv", help="Rules CSV file")
-    p.add_argument("--objects",  default="pa_address_objects.csv", help="Address Objects CSV file")
-    p.add_argument("--groups",   default="pa_address_groups.csv", help="Address Groups CSV file")
-    p.add_argument("--services", default="pa_service_objects.csv", help="Service Objects CSV file")
+    p.add_argument("--rules",    default="rules.csv", help="Rules CSV file")
+    p.add_argument("--objects",  default="address_objects.csv", help="Address Objects CSV file")
+    p.add_argument("--groups",   default="address_groups.csv", help="Address Groups CSV file")
+    p.add_argument("--services", default="service_objects.csv", help="Service Objects CSV file")
     p.add_argument("--reqid",    default=None, help="Request ID to embed")
     p.add_argument("--carid",    default=None, help="CARID to embed")
     p.add_argument("--tlmid",    default=None, help="Third-party ID (TLM ID) to embed")
