@@ -115,8 +115,14 @@ def expand_entity(name, objs, groups, visited=None):
             if tag in [t.lower() for t in obj['tags']]:
                 ips.append(obj['value'])
         return ips
-    # any or literal
-    return [] if name.lower() == 'any' else [name]
+    # 'any' represents the wildcard and should result in an empty list so that
+    # the caller can emit 'any' in the final output.  If the entity name is
+    # not found in either the objects or groups, return the literal name so
+    # it can be surfaced in the output rather than silently treated as 'any'.
+    if name.lower() == 'any':
+        return []
+    # unknown entity: return name as-is for visibility
+    return [name]
 
 
 def generate_issue(rules_csv, objs_csv, groups_csv, services_csv, reqid=None, carid=None, tlmid=None):
@@ -186,13 +192,13 @@ if __name__ == '__main__':
     # By default, use the sample files with additional unused fields.  These names
     # correspond to the "garbage" sample CSVs provided with the repository.  If
     # you have your own exports, override them via the command line.
-    parser.add_argument('--rules', default='pa_rules_garbage.csv',
+    parser.add_argument('--rules', default='pa_rules.csv',
                         help='Rules CSV file (Name,Source Address,Destination Address,Service)')
-    parser.add_argument('--objects', default='pa_address_objects_garbage.csv',
+    parser.add_argument('--objects', default='pa_address_objects.csv',
                         help='Address objects CSV file (Name,Type,Address,Tag)')
-    parser.add_argument('--groups', default='pa_address_groups_garbage.csv',
+    parser.add_argument('--groups', default='pa_address_groups.csv',
                         help='Address groups CSV file (Name, Members Count, Addresses)')
-    parser.add_argument('--services', default='pa_service_objects_garbage.csv',
+    parser.add_argument('--services', default='pa_service_objects.csv',
                         help='Service objects CSV file (Name,Protocol,Destination Port)')
     parser.add_argument('--reqid', help='Request ID (REQID)')
     parser.add_argument('--carid', help='CARID')
