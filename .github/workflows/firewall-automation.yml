@@ -174,7 +174,7 @@ jobs:
           python3 .github/scripts/boundary_mapper.py \
             --map-file boundary_map.json \
             --json-file firewall-requests/${{ steps.parse_and_write.outputs.REQID }}.auto.tfvars.json \
-            --default-boundary dmz
+            --default-boundary onprem
 
       - name: ⏫ Create or Update Pull Request for NetSec
         id: cpr
