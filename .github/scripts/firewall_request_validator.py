@@ -84,7 +84,7 @@ PRIVATE_RANGES = [
 # Boundary map utilities for mixed‑boundary detection
 
 # Default boundary name to use when mapping an IP that isn't found in the map.
-DEFAULT_BOUNDARY = "dmz"
+DEFAULT_BOUNDARY = "onprem"
 
 try:
     # Compute an absolute path to boundary_map.json.  Reuse the same path
