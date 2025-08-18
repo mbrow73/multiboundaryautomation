@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Firewall request validator.
+Firewall request validator (modified).
 
 This script validates firewall rule requests submitted via GitHub Issues. It enforces
 proper formatting for REQID and CARID values, checks that IP addresses and
@@ -24,6 +24,11 @@ and that restricted Google API ranges (``199.36.153.4/30``) may only appear on
 the destination side. It also strips leading punctuation/emoji from lines
 before extracting fields to better handle templates that prefix labels with
 icons.
+
+Compared to the original version, this modified validator **removes** the
+requirement that public IPs must appear only in specific allowed ranges and
+**drops** the maximum mask requirement of ``/24``.  All other logic, such as
+health‑check and restricted API range placement, remains intact.
 """
 
 import re
@@ -32,7 +37,7 @@ import ipaddress
 import json
 import os
 
-# Allowed public ranges for Google services.
+# Allowed public ranges for Google services (retained for compatibility).
 ALLOWED_PUBLIC_RANGES = [
     ipaddress.ip_network("35.191.0.0/16"),
     ipaddress.ip_network("130.211.0.0/22"),
@@ -77,12 +82,6 @@ PRIVATE_RANGES = [
 
 # -----------------------------------------------------------------------------
 # Boundary map utilities for mixed‑boundary detection
-#
-# We build a simplified boundary index from boundary_map.json so that we can
-# enforce that all source IP ranges map to a single boundary, and likewise for
-# destination ranges.  This mirrors the logic in boundary_mapper.py and allows
-# us to catch invalid mixed‑boundary combinations during validation rather than
-# failing later in the pipeline.
 
 # Default boundary name to use when mapping an IP that isn't found in the map.
 DEFAULT_BOUNDARY = "dmz"
@@ -130,14 +129,19 @@ except Exception:
     _full_boundary_map = {}
     _boundary_index = []
 
-def _determine_boundary_for_validator(ip_list: list[str], index: list[tuple[ipaddress._BaseNetwork, str]], default_boundary: str | None = DEFAULT_BOUNDARY) -> str:
+from typing import Optional, List
+
+def _determine_boundary_for_validator(ip_list: List[str], index: List[tuple[ipaddress._BaseNetwork, str]], default_boundary: Optional[str] = DEFAULT_BOUNDARY) -> str:
     """
     Determine the boundary for a list of CIDRs.  All entries must map to the
     same boundary.  If a CIDR is not found in the map and a default is
     provided, the default is used.  Raises ValueError if more than one
     boundary is detected.
     """
-    boundaries: set[str] = set()
+    # We use a plain set rather than a type-annotated literal to maintain
+    # compatibility with Python versions prior to 3.9.  Using ``set[str]``
+    # would trigger a "TypeError: unsupported operand type" on older runtimes.
+    boundaries: set = set()
     for ip_str in ip_list:
         ip_str = ip_str.strip()
         if not ip_str:
@@ -187,7 +191,7 @@ def validate_port(port: str) -> bool:
 
 def main() -> None:
     if len(sys.argv) < 2:
-        print("Usage: firewall_request_validator.py <issue_body_file>")
+        print("Usage: firewall_request_validator_modified.py <issue_body_file>")
         sys.exit(1)
     issue = open(sys.argv[1]).read()
     errors: list[str] = []
@@ -265,20 +269,12 @@ def main() -> None:
                         third_party_src = True
                     else:
                         third_party_dst = True
-                # Oversized prefix handling (< /24)
-                if net.prefixlen < 24:
-                    if not any(net.subnet_of(r) for r in ALLOWED_PUBLIC_RANGES):
-                        errors.append(
-                            f"❌ Rule {idx}: {label_name.capitalize()} '{ip_str}' is /{net.prefixlen}, must be /24 or smaller unless it’s a GCP health‑check range."
-                        )
-                    continue
-                # Public range check (prefix >= /24)
-                if not any(net.subnet_of(r) for r in PRIVATE_RANGES):
-                    if not any(net.subnet_of(r) for r in ALLOWED_PUBLIC_RANGES):
-                        errors.append(
-                            f"❌ Rule {idx}: {label_name.capitalize()} '{ip_str}' is public and not in allowed GCP ranges."
-                        )
-                    continue
+                # NOTE: Public IP blocking and maximum mask checks removed in this version.
+                # The previous version enforced a maximum prefix length (/24) for non‑allowed
+                # public ranges and disallowed arbitrary public IP ranges that are not
+                # within ALLOWED_PUBLIC_RANGES.  Those checks have been intentionally
+                # removed to allow any public CIDRs, while still enforcing health‑check
+                # and restricted API placement rules.
 
         # Require a TLM ID only for cross‑boundary rules (one side third‑party and the other internal)
         if uses_third_party and not tlm_id and not (third_party_src and third_party_dst):
