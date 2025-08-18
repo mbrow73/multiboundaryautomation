@@ -69,7 +69,7 @@ import ipaddress
 import os
 import re
 import sys
-from typing import Dict, Iterable, List, Tuple
+from typing import Dict, Iterable, List, Tuple, Optional
 
 
 # ----------------------------- Normalisation helpers -----------------------------
@@ -405,9 +405,9 @@ def generate_merged_issue_md(
     objs_csv: str,
     groups_csv: str,
     services_csv: str,
-    reqid: str | None = None,
-    carid: str | None = None,
-    tlmid: str | None = None,
+    reqid: Optional[str] = None,
+    carid: Optional[str] = None,
+    tlmid: Optional[str] = None,
     summarise: bool = True,
     verbose: bool = False,
 ) -> str:
