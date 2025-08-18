@@ -33,20 +33,21 @@ jobs:
           # write the issue body to disk
           echo "${{ github.event.issue.body }}" > issue.txt
 
-          # ———————— INSERT: duplicate-REQID guard ————————
-          # extract the REQID from the issue
+          # ———————— duplicate-REQID guard ————————
           REQID=$(grep -i "Request ID" issue.txt | head -1 | cut -d: -f2- | xargs)
-          # if a file already exists with that REQID, reject immediately
-          if [ -f firewall-requests/${REQID}.auto.tfvars.json ]; then
+          if [ -f "firewall-requests/${REQID}.auto.tfvars.json" ]; then
             gh issue comment ${{ github.event.issue.number }} --body $'### ❌ Duplicate Request ID\n\nThe Request ID **'"${REQID}"'** has already been used for a firewall request. Please choose a new Request ID or submit an update request instead.'
             gh issue close ${{ github.event.issue.number }}
             exit 1
           fi
-          # ————————————————————————————————————————————————
+          # ————————————————————————————————
 
-          # run your existing validation script
-          python3 .github/scripts/firewall_request_validator.py issue.txt > validation_output.txt || VALIDATION_FAILED=1
-          if [[ "$VALIDATION_FAILED" == "1" ]]; then
+          # run validator
+          set +e
+          python3 .github/scripts/firewall_request_validator.py issue.txt > validation_output.txt
+          STATUS=$?
+          set -e
+          if [ "$STATUS" -ne 0 ]; then
             ERRORS=$(awk '/VALIDATION_ERRORS_START/,/VALIDATION_ERRORS_END/' validation_output.txt \
                      | sed '/VALIDATION_ERRORS_START\|VALIDATION_ERRORS_END/d')
             gh issue comment ${{ github.event.issue.number }} --body $'### ❌ Firewall Request Validation Failed\n\n**Errors:**\n\n'"$(echo "$ERRORS" | sed 's/^/- /')"'\n\n_Your request was closed. Please correct the above and submit again._'
@@ -66,15 +67,13 @@ jobs:
           else
             MAX=999
           fi
-          if [[ -z "$MAX" || "$MAX" == "null" ]]; then
-            MAX=999
-          fi
-          if [[ "$MAX" =~ ^[0-9]+$ ]] && [ "$MAX" -lt 1000 ]; then
-            MAX=999
-          fi
-          echo "MAX_PRIORITY<<EOF" >> $GITHUB_OUTPUT
-          echo "$MAX"           >> $GITHUB_OUTPUT
-          echo "EOF"            >> $GITHUB_OUTPUT
+          if [[ -z "$MAX" || "$MAX" == "null" ]]; then MAX=999; fi
+          if [[ "$MAX" =~ ^[0-9]+$ ]] && [ "$MAX" -lt 1000 ]; then MAX=999; fi
+          {
+            echo "MAX_PRIORITY<<EOF"
+            echo "$MAX"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name:  Parse Issue, Generate Per-REQID JSON and Rule Summary
         id: parse_and_write
@@ -85,81 +84,99 @@ jobs:
           ISSUE_BODY="$(printf '%s' "${{ github.event.issue.body }}" | tr -d $'\r' | sed -e 's/[\x00-\x1F]//g')"
           REQID=$(echo "$ISSUE_BODY" | grep -i "Request ID" | head -1 | cut -d: -f2- | xargs)
           CARID=$(echo "$ISSUE_BODY" | grep -i "CARID"     | head -1 | cut -d: -f2- | xargs)
-          echo "REQID=$REQID" >> $GITHUB_OUTPUT
+          echo "REQID=$REQID" >> "$GITHUB_OUTPUT"
 
           MAX_PRIORITY=${{ steps.max_priority.outputs.MAX_PRIORITY }}
 
-          # Prefer mawk with a larger sprintf buffer; fall back to awk if mawk isn't present.
-          if command -v mawk >/dev/null 2>&1; then
-            AWK='mawk -W sprintf=10485760'
+          # Detect mawk vs gawk and set sprintf room for mawk.
+          if command -v mawk >/dev/null 2>&1 && ! command -v gawk >/dev/null 2>&1; then
+            AWK_BIN="mawk"
+            AWK_SPRINTF="-W sprintf=10485760"   # 10 MiB
           else
-            AWK='awk'
+            # Prefer gawk if present (no sprintf limit). If only awk exists and is gawk, fine.
+            AWK_BIN="$(command -v gawk || command -v awk)"
+            AWK_SPRINTF=""
           fi
 
-          # split out the #### Rule blocks
-          RULES=$(echo "$ISSUE_BODY" | eval "$AWK" '
-            BEGIN{rule=0}
-            /^#### Rule/{
-              if(rule){ print rule_block "\n@@@" }
-              rule_block=""; rule=1; next
-            }
-            rule{ rule_block = rule_block $0 "\n" }
-            END{ if(rule) print rule_block }
-          ')
+          # Write the awk programs to files (avoids quoting/eval issues).
+          cat > split_rules.awk <<'AWK'
+          BEGIN { rule=0 }
+          /^####[[:space:]]*Rule/ {
+            if (rule) { print rule_block "\n@@@" }
+            rule_block=""; rule=1; next
+          }
+          rule { rule_block = rule_block $0 "\n" }
+          END { if (rule) print rule_block }
+          AWK
 
-          # build JSON + summary, trimming whitespace on each extracted field
-          echo "$RULES" | eval "$AWK" -v carid="$CARID" -v reqid="$REQID" -v maxp="$MAX_PRIORITY" '
-            function build_list(str,   arr, j, list) {
-              gsub(/,[[:space:]]*/, ",", str)
-              split(str, arr, ",")
-              list=""
-              for(j=1; j<=length(arr); j++) {
-                gsub(/^[ \t]+|[ \t]+$/, "", arr[j])
-                if(arr[j] != "") {
-                  if(list != "") list = list ","
-                  list = list "\"" arr[j] "\""
-                }
+          cat > build_json.awk <<'AWK'
+          function build_list(str,   arr, j, list) {
+            gsub(/,[[:space:]]*/, ",", str)
+            split(str, arr, ",")
+            list=""
+            for (j=1; j<=length(arr); j++) {
+              gsub(/^[ \t]+|[ \t]+$/, "", arr[j])
+              if (arr[j] != "") {
+                if (list != "") list = list ","
+                list = list "\"" arr[j] "\""
               }
-              return list
             }
-            BEGIN { RS="@@@"; }
-            NF {
-              src=""; dst=""; ports=""; proto=""; dir=""; just="";
-              svpc=""; dvpc="";
-              n=split($0, lines, "\n");
-              for(i=1;i<=n;i++){
-                if(lines[i] ~ /New Source IP/)         { sub(/.*: */,"",lines[i]); gsub(/^[ \t]+|[ \t]+$/,"",lines[i]); src=lines[i]; }
-                if(lines[i] ~ /New Destination IP/)    { sub(/.*: */,"",lines[i]); gsub(/^[ \t]+|[ \t]+$/,"",lines[i]); dst=lines[i]; }
-                if(lines[i] ~ /New Port/)              { sub(/.*: */,"",lines[i]); gsub(/^[ \t]+|[ \t]+$/,"",lines[i]); ports=lines[i]; }
-                if(lines[i] ~ /New Protocol/)          { sub(/.*: */,"",lines[i]); gsub(/^[ \t]+|[ \t]+$/,"",lines[i]); proto=lines[i]; }
-                if(lines[i] ~ /New Direction/)         { sub(/.*: */,"",lines[i]); gsub(/^[ \t]+|[ \t]+$/,"",lines[i]); dir=lines[i]; }
-                if(lines[i] ~ /New Business Justification/) { sub(/.*: */,"",lines[i]); gsub(/^[ \t]+|[ \t]+$/,"",lines[i]); just=lines[i]; }
-              }
-              src_list  = build_list(src)
-              dst_list  = build_list(dst)
-              port_list = build_list(ports)
+            return list
+          }
+          BEGIN { RS="@@@"; ORS=""; }
+          NF {
+            src=""; dst=""; ports=""; proto=""; dir=""; just="";
+            svpc=""; dvpc="";
+            n=split($0, lines, "\n")
+            for (i=1; i<=n; i++) {
+              line=lines[i]
+              if (line ~ /New Source IP/)               { sub(/.*: */,"",line); gsub(/^[ \t]+|[ \t]+$/,"",line); src=line }
+              else if (line ~ /New Destination IP/)     { sub(/.*: */,"",line); gsub(/^[ \t]+|[ \t]+$/,"",line); dst=line }
+              else if (line ~ /New Port/)               { sub(/.*: */,"",line); gsub(/^[ \t]+|[ \t]+$/,"",line); ports=line }
+              else if (line ~ /New Protocol/)           { sub(/.*: */,"",line); gsub(/^[ \t]+|[ \t]+$/,"",line); proto=line }
+              else if (line ~ /New Direction/)          { sub(/.*: */,"",line); gsub(/^[ \t]+|[ \t]+$/,"",line); dir=line }
+              else if (line ~ /New Business Justification/) { sub(/.*: */,"",line); gsub(/^[ \t]+|[ \t]+$/,"",line); just=line }
+            }
+            src_list  = build_list(src)
+            dst_list  = build_list(dst)
+            port_list = build_list(ports)
 
-              gsub(/,[[:space:]]*/, ",", ports)
-              rulename = sprintf("AUTO-%s-%s-%s-%s-%d", reqid, carid, toupper(proto), ports, NR);
-              desc     = rulename " | " just;
-              printf("{\"name\":\"%s\",\"description\":\"%s\",\"direction\":\"%s\",\"src_vpc\":\"%s\",\"dest_vpc\":\"%s\",\"src_ip_ranges\":[%s],\"dest_ip_ranges\":[%s],\"ports\":[%s],\"protocol\":\"%s\",\"priority\":%d,\"enable_logging\":true}\n", \
-                     rulename, desc, dir, svpc, dvpc, src_list, dst_list, port_list, tolower(proto), maxp+NR) >> "rules.json";
-              rule_flow = sprintf("- **Rule %d:** %s → %s on %s/%s\n    Justification: %s\n", \
-                                  NR, src, dst, tolower(proto), ports, just);
-              print rule_flow >> "rules_summary.txt";
-            }
-          '
+            ports_plain = ports
+            gsub(/,[[:space:]]*/, ",", ports_plain)
+
+            rulename = sprintf("AUTO-%s-%s-%s-%s-%d", reqid, carid, toupper(proto), ports_plain, NR)
+            desc     = rulename " | " just
+
+            printf("{\"name\":\"%s\",\"description\":\"%s\",\"direction\":\"%s\",\"src_vpc\":\"%s\",\"dest_vpc\":\"%s\",\"src_ip_ranges\":[%s],\"dest_ip_ranges\":[%s],\"ports\":[%s],\"protocol\":\"%s\",\"priority\":%d,\"enable_logging\":true}\n", \
+                   rulename, desc, dir, svpc, dvpc, src_list, dst_list, port_list, tolower(proto), maxp+NR) >> "rules.json"
+
+            rule_flow = sprintf("- **Rule %d:** %s → %s on %s/%s\n    Justification: %s\n", \
+                                NR, src, dst, tolower(proto), ports_plain, just)
+            print rule_flow >> "rules_summary.txt"
+          }
+          AWK
+
+          # 1) Split the issue body into rule blocks
+          printf '%s\n' "$ISSUE_BODY" | "$AWK_BIN" $AWK_SPRINTF -f split_rules.awk > rules_blocks.txt
+
+          # 2) Build JSON and human summary from those blocks
+          : > rules.json
+          : > rules_summary.txt
+          "$AWK_BIN" $AWK_SPRINTF -v carid="$CARID" -v reqid="$REQID" -v maxp="$MAX_PRIORITY" \
+            -f build_json.awk rules_blocks.txt
 
           RULES_JSON=$(paste -sd, rules.json)
           TFVARS="{\"auto_firewall_rules\":[${RULES_JSON}]}"
 
           mkdir -p firewall-requests
-          echo "$TFVARS" | jq '.' > firewall-requests/${REQID}.auto.tfvars.json
+          echo "$TFVARS" | jq '.' > "firewall-requests/${REQID}.auto.tfvars.json"
 
           SUMMARY=$(cat rules_summary.txt)
-          echo "RULE_SUMMARY<<EOF" >> $GITHUB_OUTPUT
-          echo "$SUMMARY"       >> $GITHUB_OUTPUT
-          echo "EOF"            >> $GITHUB_OUTPUT
+          {
+            echo "RULE_SUMMARY<<EOF"
+            echo "$SUMMARY"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: ️ Map IPs to Boundaries
         shell: bash
