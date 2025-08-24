@@ -62,7 +62,7 @@ jobs:
       - name: "🧭 Remap src_vpc/dest_vpc after update"
         run: |
           for file in firewall-requests/*.auto.tfvars.json; do
-            python3 .github/scripts/boundary_mapper.py --map-file boundary_map.json --json-file "$file" || exit 1
+            python3 .github/scripts/boundary_mapper.py --map-file boundary_map.json --json-file "$file" --default-boundary "onprem" || exit 1
           done
 
       - name: "📋 Prepare Rule Update Summary for PR"
