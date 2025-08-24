@@ -529,6 +529,7 @@ def main() -> None:
                 os.path.join(SCRIPT_DIR, "boundary_mapper.py"),
                 "--map-file", map_file,
                 "--json-file", new_path,
+                "--default-boundary", DEFAULT_BOUNDARY
             ], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
         pass
