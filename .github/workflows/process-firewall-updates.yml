@@ -27,8 +27,19 @@ jobs:
       - name: "🔎 Validate & Apply Rule Updates"
         shell: bash
         run: |
-          echo "${{ github.event.issue.body }}" > issue.txt
-          python3 .github/scripts/firewall_rule_updater.py "$(cat issue.txt)" > validation_output.txt || VALIDATION_FAILED=1
+          # Fetch the issue body via the GitHub API rather than directly
+          # expanding it in YAML.  Direct expansion would insert the raw
+          # multi-line Markdown into this run script, causing syntax
+          # errors when the body contains quotes, parentheses or newlines.
+          # Using `gh api` ensures that the issue body is retrieved at runtime
+          # and written verbatim to a file.  The `--jq` option extracts the
+          # `body` field from the JSON response.
+          issue_body=$(gh api "repos/${{ github.repository }}/issues/${{ github.event.issue.number }}" --jq '.body')
+          printf '%s' "$issue_body" > issue.txt
+          # Pass the issue body via standard input to the updater.  The
+          # updater script reads from stdin when no positional argument is
+          # provided.  This avoids shell parsing issues.
+          python3 .github/scripts/firewall_rule_updater.py < issue.txt > validation_output.txt || VALIDATION_FAILED=1
           if [[ "$VALIDATION_FAILED" == "1" ]]; then
             ERRORS=$(awk '/VALIDATION_ERRORS_START/,/VALIDATION_ERRORS_END/' validation_output.txt | sed '/VALIDATION_ERRORS_START\|VALIDATION_ERRORS_END/d' | sed 's/^/- /')
             {
