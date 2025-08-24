@@ -27,16 +27,8 @@ jobs:
       - name: "🔎 Validate & Apply Rule Updates"
         shell: bash
         run: |
-          # Write the issue body to a temporary file.  Using a file avoids
-          # problems with embedded quotes and parentheses when passing the
-          # entire body as a single argument.  The updater will read from
-          # stdin if no argument is provided.
           echo "${{ github.event.issue.body }}" > issue.txt
-          # Pass the issue body via standard input to the updater.  This
-          # prevents shell parsing errors caused by unescaped characters in
-          # the issue text.  The updater script is designed to read from
-          # stdin when no positional argument is given.
-          python3 .github/scripts/firewall_rule_updater.py < issue.txt > validation_output.txt || VALIDATION_FAILED=1
+          python3 .github/scripts/firewall_rule_updater.py "$(cat issue.txt)" > validation_output.txt || VALIDATION_FAILED=1
           if [[ "$VALIDATION_FAILED" == "1" ]]; then
             ERRORS=$(awk '/VALIDATION_ERRORS_START/,/VALIDATION_ERRORS_END/' validation_output.txt | sed '/VALIDATION_ERRORS_START\|VALIDATION_ERRORS_END/d' | sed 's/^/- /')
             {
