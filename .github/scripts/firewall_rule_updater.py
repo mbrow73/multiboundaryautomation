@@ -77,7 +77,7 @@ except Exception:
 # boundaries as invalid.
 
 # Default boundary used when an IP/CIDR does not match any defined boundary.
-DEFAULT_BOUNDARY = "unknown"
+DEFAULT_BOUNDARY = "onprem"
 
 def _build_boundary_index(boundary_map: Dict[str, List[str]]) -> List[Tuple[ipaddress.IPv4Network, str]]:
     """Build a list of (network, boundary_name) tuples sorted by prefix length.
