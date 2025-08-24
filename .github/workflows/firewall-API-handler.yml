@@ -42,15 +42,21 @@ jobs:
           python3 .github/scripts/firewall_issue_builder.py --mode request --payload payload.json --output issue_body.md
 
       - name: Create GitHub issue for firewall request
+        # Use a personal access token (PAT) for issue creation so that the resulting
+        # issue event triggers downstream workflows.  The PAT must be stored
+        # in the repository secrets as FIREWALL_API_TOKEN.  Using the default
+        # GITHUB_TOKEN will not trigger other workflows due to GitHub's loop
+        # prevention; see https://docs.github.com/en/actions/using-workflows/triggering-a-workflow#triggering-a-workflow-from-a-workflow.
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.FIREWALL_API_TOKEN }}
         run: |
           # Compose the issue title from the reqid and create the issue with a label.
           TITLE="Firewall request: ${{ github.event.client_payload.reqid }}"
+          # The labels field accepts a comma-separated list; use a single label for this request.
           gh api repos/${{ github.repository }}/issues \
             -f title="$TITLE" \
             -f body="$(cat issue_body.md)" \
-            -f labels[]="firewall-request"
+            -f labels=firewall-request
 
   # Handle firewall rule updates submitted via the API.
   update_request:
@@ -74,14 +80,15 @@ jobs:
           python3 .github/scripts/firewall_issue_builder.py --mode update --payload payload.json --output issue_body.md
 
       - name: Create GitHub issue for update request
+        # Use PAT for issue creation so that the update request triggers downstream workflows
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.FIREWALL_API_TOKEN }}
         run: |
           TITLE="Firewall rule update request: ${{ github.event.client_payload.new_reqid }}"
           gh api repos/${{ github.repository }}/issues \
             -f title="$TITLE" \
             -f body="$(cat issue_body.md)" \
-            -f labels[]="firewall-update-request"
+            -f labels=firewall-update-request
 
   # Handle firewall rule removals submitted via the API.
   remove_request:
@@ -105,11 +112,12 @@ jobs:
           python3 .github/scripts/firewall_issue_builder.py --mode remove --payload payload.json --output issue_body.md
 
       - name: Create GitHub issue for removal request
+        # Use PAT for issue creation so that the removal request triggers downstream workflows
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.FIREWALL_API_TOKEN }}
         run: |
           TITLE="Firewall rule removal: ${{ github.event.client_payload.reqid }}"
           gh api repos/${{ github.repository }}/issues \
             -f title="$TITLE" \
             -f body="$(cat issue_body.md)" \
-            -f labels[]="firewall-remove-request"
+            -f labels=firewall-remove-request
