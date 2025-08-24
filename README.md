@@ -12,16 +12,6 @@ This document explains how to use the **repository dispatch API** to create, upd
 
    The token must be stored somewhere safe (e.g. in a secret or your local environment).
 
-2. **Repository Setup**
-
-   - Ensure the automation workflows and helper scripts are present in `.github/workflows` and `.github/scripts` in your repository.
-   - Define labels `firewall-request`, `firewall-update-request` and `firewall-remove-request` in your repository, because the workflows filter on these labels.
-   - Add a secret named `FIREWALL_API_TOKEN` (or update your workflow to reference your chosen secret) containing a PAT with the scopes mentioned above.
-
-3. **Boundary Map**
-
-   - Your `boundary_map.json` defines named boundaries for IP ranges.  When calling the boundary mapper, you can supply `--default-boundary onprem` to map unmapped IP ranges into the *on‑premises* boundary by default.  You do **not** need to edit the script to change its default; it is safer to specify this on the command line.
-
 ## 2. Calling the API
 
 ### 2.1. Endpoint
@@ -67,7 +57,6 @@ Each rule object must include:
 - **ports** (string): comma‑separated list of port numbers or ranges.  Required.
 - **protocol** (string): one of `tcp`, `udp`, `icmp` or `sctp`.  Required.
 - **justification** (string): brief business justification.  Required.
-- **direction** (string): optional; either `INGRESS` or `EGRESS`.  If omitted, the default is ingress in GCP.
 
 Example:
 
@@ -85,7 +74,6 @@ Example:
         "ports": "443,8443",
         "protocol": "tcp",
         "justification": "Example rule",
-        "direction": "INGRESS"
       },
       {
         "src": "172.16.0.0/24",
@@ -173,10 +161,6 @@ Example:
 - **Payload size**: The entire `client_payload` must fit within GitHub’s `repository_dispatch` limit (about 64 KB).  If you need to submit hundreds of rules with long IP lists, consider splitting them into multiple dispatches or summarising IPs before sending.
 
 - **No file attachments**: The dispatch API only accepts JSON.  You cannot attach arbitrary files.  If you need to use a large external file (e.g. an address list), commit it to the repository and then reference it in your automation scripts, or extend the helper to read from a URL.  At present the helper script expects everything in `client_payload.rules`.
-
-- **Direction**: In Google Cloud, an ingress rule cannot specify destination IP ranges and an egress rule cannot specify source IP ranges.  The validator enforces this for FQDNs but not yet for IP lists, so be careful: if you set `direction: "INGRESS", do not include `dest_ip_ranges` in the generated rule.
-
-- **Boundary assignment**: The `boundary_mapper.py` script attempts to map each IP range to a boundary defined in `boundary_map.json`.  If a CIDR is unmapped and you do not specify `--default-boundary`, the mapping step will fail.  In update workflows you can call the mapper with `--default-boundary onprem` to assign any unmapped ranges to the `onprem` boundary.
 
 - **Validation**: Submissions will be validated by `firewall_request_validator.py` or `firewall_rule_updater.py`.  Invalid REQIDs, CARIDs, ports, protocols, or IP formats will cause the issue to be closed automatically.
 
