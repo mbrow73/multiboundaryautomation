@@ -1,8 +1,12 @@
 name: API Firewall Request Handler
 
+# This workflow listens for repository_dispatch events to create, update,
+# or remove firewall rule requests. It expects the client payload to
+# contain the necessary fields as JSON and uses a unified Python helper
+# script to build the issue body.
+
 on:
   repository_dispatch:
-    # These custom event types can be triggered via the GitHub API to create, update or remove firewall rules.
     types:
       - firewall_request
       - firewall_update
@@ -19,87 +23,93 @@ jobs:
     if: github.event.action == 'firewall_request'
     runs-on: ubuntu-latest
     steps:
-      - name: ⬇️ Checkout repository
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: 🐍 Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: 📦 Capture client payload
-        id: payload
+      - name: Capture client payload
         run: |
+          # Write the client_payload from the dispatch event to a JSON file.
           echo '${{ toJson(github.event.client_payload) }}' > payload.json
-          jq . payload.json || true
 
-      - name: 🧪 Build firewall‑request issue body from JSON
+      - name: Build firewall request issue body
         run: |
-          set -euo pipefail
-          # Use unified helper script to build the Markdown body for a new request. It writes to issue_body.md.
+          # Build a Markdown issue body for a new request using the unified script.
           python3 .github/scripts/firewall_issue_builder.py --mode request --payload payload.json --output issue_body.md
 
-      - name: 📨 Create GitHub Issue for firewall request
+      - name: Create GitHub issue for firewall request
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -euo pipefail
-          # Derive the title from the client payload directly.
+          # Compose the issue title from the reqid and create the issue with a label.
           TITLE="Firewall request: ${{ github.event.client_payload.reqid }}"
-          BODY=$(cat issue_body.md)
           gh api repos/${{ github.repository }}/issues \
             -f title="$TITLE" \
-            -f body="$BODY" \
-            -f labels='["firewall-request"]'
+            -f body="$(cat issue_body.md)" \
+            -f labels[]="firewall-request"
 
   # Handle firewall rule updates submitted via the API.
   update_request:
     if: github.event.action == 'firewall_update'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Parse update payload and build issue
+
+      - name: Capture update payload
         run: |
-          set -euo pipefail
           echo '${{ toJson(github.event.client_payload) }}' > payload.json
-          # Use unified helper script to build update issue body.
+
+      - name: Build update issue body
+        run: |
           python3 .github/scripts/firewall_issue_builder.py --mode update --payload payload.json --output issue_body.md
-      - name: Submit update issue
+
+      - name: Create GitHub issue for update request
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -euo pipefail
           TITLE="Firewall rule update request: ${{ github.event.client_payload.new_reqid }}"
           gh api repos/${{ github.repository }}/issues \
             -f title="$TITLE" \
             -f body="$(cat issue_body.md)" \
-            -f labels='["firewall-update-request"]'
+            -f labels[]="firewall-update-request"
 
   # Handle firewall rule removals submitted via the API.
   remove_request:
     if: github.event.action == 'firewall_remove'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Parse removal payload and build issue
+
+      - name: Capture removal payload
         run: |
-          set -euo pipefail
           echo '${{ toJson(github.event.client_payload) }}' > payload.json
-          # Use unified helper script to build removal issue body.
+
+      - name: Build removal issue body
+        run: |
           python3 .github/scripts/firewall_issue_builder.py --mode remove --payload payload.json --output issue_body.md
-      - name: Submit removal issue
+
+      - name: Create GitHub issue for removal request
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -euo pipefail
           TITLE="Firewall rule removal: ${{ github.event.client_payload.reqid }}"
           gh api repos/${{ github.repository }}/issues \
             -f title="$TITLE" \
             -f body="$(cat issue_body.md)" \
-            -f labels='["firewall-remove-request"]'
+            -f labels[]="firewall-remove-request"
