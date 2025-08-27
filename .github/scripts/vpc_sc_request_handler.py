@@ -15,17 +15,6 @@ import yaml  # type: ignore
 
 
 def parse_issue_body(issue_text: str) -> Dict[str, Any]:
-    """
-    Parse the markdown issue text into a structured dictionary:
-      - reqid: request ID
-      - perimeters: global perimeters (deprecated but retained)
-      - third_party: any third-party name
-      - justification: top-level justification
-      - rules: list of rule dicts (direction, services, methods, permissions,
-               sources, destinations, identities, perimeters).
-    Handles multiple rules, normalises identity prefixes, and skips any
-    variant of “Third-Party Name” heading.
-    """
     clean_text = re.sub(r"[\*`]+", "", issue_text)
     reqid_match = re.search(r"Request ID.*?:\s*([A-Za-z0-9_-]+)", clean_text, re.IGNORECASE)
     reqid = reqid_match.group(1).strip() if reqid_match else f"REQ-{uuid.uuid4().hex[:8]}"
@@ -69,7 +58,6 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
             stripped = line.strip()
             if not stripped:
                 continue
-            # Normalise markdown markers and hyphens
             normalized = re.sub(r"[*`#]+", "", stripped)
             normalized = (normalized
                           .replace("\u2011", "-")
@@ -88,13 +76,12 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
                     break
             if matched_heading:
                 key = matched_heading.lower().replace("\u2011", "-").replace("\u2012", "-") \
-                                              .replace("\u2013", "-").replace("\u2014", "-")
+                                             .replace("\u2013", "-").replace("\u2014", "-")
                 if key.startswith("direction") or "third-party" in key or key == "justification":
                     current_heading = None
                 else:
                     current_heading = matched_heading
                 continue
-            # Skip any variant of 'Third-Party Name'
             if re.match(r"^third[-\u2011\u2012\u2013\u2014]?party name", normalized, re.IGNORECASE):
                 current_heading = None
                 continue
@@ -124,7 +111,7 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
         services = split_values("Services")
         methods  = split_values("Methods")
         permissions = split_values("Permissions")
-        sources = split_values("Source / From") + split_values("From")
+        sources   = split_values("Source / From") + split_values("From")
         destinations = split_values("Destination / To") + split_values("To")
 
         identities: List[str] = []
