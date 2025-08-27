@@ -81,11 +81,9 @@ jobs:
               return new_content[idx:i-1].strip()
 
           def update_array(existing, array_name, new_body):
-              # Replace the contents of array_name = [ ... ] with new_body
-              pattern = rf"({array_name}\\s*=\\s*\\[)(.*?)(\\])"
-              m = re.search(pattern, existing, re.DOTALL)
-              if m:
-                  return existing[:m.start(2)] + "\n" + new_body + "\n" + existing[m.end(2):]
+              pattern = re.compile(rf"^{array_name}\\s*=\\s*\\[.*?\\]", re.MULTILINE | re.DOTALL)
+              if pattern.search(existing):
+                  return pattern.sub(f"{array_name} = [\n{new_body}\n]", existing)
               else:
                   return existing + f"\n{array_name} = [\n{new_body}\n]\n"
 
