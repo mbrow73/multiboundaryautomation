@@ -2,7 +2,8 @@
 """
 VPC Service Controls request handler.
 Parses a GitHub issue body into per-rule structures, normalises identities,
-and builds ingress/egress policy objects in HCL-ready form.
+and builds ingress/egress policy objects in HCL-ready form, using a Terraform
+module to create access levels from IP subnetworks.
 """
 
 import argparse
@@ -198,22 +199,17 @@ def build_actions(parsed: Dict[str, Any], router: Dict[str, Any]) -> List[Dict[s
                         resource_sources.append(src)
                 if ip_subnets:
                     level_name = f"{safe_name(reqid)}-rule{idx+1}"
-                    access_uri = f"accessPolicies/{policy_id}/accessLevels/{level_name}"
-                    access_levels_list.append(access_uri)
-                    hcl_lines = [
-                        f"resource \"google_access_context_manager_access_level\" \"{level_name}\" {{",
-                        f"  name   = \"accessPolicies/{policy_id}/accessLevels/{level_name}\"",
-                        f"  parent = \"accessPolicies/{policy_id}\"",
-                        f"  title  = \"{level_name}\"",
-                        "  basic {",
-                        "    conditions {",
-                        f"      ip_subnetworks = [" + ", ".join([f'\"{ip}\"' for ip in ip_subnets]) + "]",
-                        (f"      members        = [" + ", ".join([f'\"{m}\"' for m in identities]) + "]" if identities else ""),
-                        "    }",
-                        "  }",
+                    access_levels_list.append(level_name)
+                    module_lines = [
+                        f'module "vpc-service-controls-access-level_{level_name}" {{',
+                        '  source  = "tfe.<domain>/<namespace>/vpc-service-controls/google//modules/access_level"',
+                        '  version = "0.0.4"',
+                        '  policy  = var.policy',
+                        f'  name    = "{level_name}"',
+                        f'  ip_subnetworks = [' + ", ".join([f'"{ip}"' for ip in ip_subnets]) + ']',
                         "}\n",
                     ]
-                    data["access_levels"].append("\n".join([line for line in hcl_lines if line]))
+                    data["access_levels"].append("\n".join(module_lines))
                 ingress_from["sources"] = {"resources": resource_sources, "access_levels": access_levels_list}
                 if identities:
                     ingress_from["identities"] = identities
