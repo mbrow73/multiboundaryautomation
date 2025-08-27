@@ -131,10 +131,15 @@ jobs:
               subprocess.run(['git', '-C', repo_dir, 'config', 'user.email', 'bot@example.com'], check=True)
               subprocess.run(['git', '-C', repo_dir, 'config', 'user.name', 'VPC SC Bot'], check=True)
               subprocess.run(['git', '-C', repo_dir, 'add', '.'], check=True)
-              subprocess.run(['git', '-C', repo_dir, 'commit', '-m', commit], check=True)
-              subprocess.run(['git', '-C', repo_dir, 'push', '--set-upstream', 'origin', branch], check=True)
-              subprocess.run(['gh', 'pr', 'create', '--repo', repo, '--head', branch,
-                              '--title', pr_title, '--body', pr_body], cwd=repo_dir, check=True)
+              # commit only if there are staged changes
+              status = subprocess.run(['git', '-C', repo_dir, 'status', '--porcelain'], capture_output=True, text=True)
+              if status.stdout.strip():
+                  subprocess.run(['git', '-C', repo_dir, 'commit', '-m', commit], check=True)
+                  subprocess.run(['git', '-C', repo_dir, 'push', '--set-upstream', 'origin', branch], check=True)
+                  subprocess.run(['gh', 'pr', 'create', '--repo', repo, '--head', branch,
+                                  '--title', pr_title, '--body', pr_body], cwd=repo_dir, check=True)
+              else:
+                  print(f"No changes to commit for {repo}; skipping PR.")
           PY
 
       - name: Comment on the issue with summary
