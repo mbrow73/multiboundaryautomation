@@ -31,7 +31,7 @@ jobs:
       - name: Install Python dependencies
         run: python -m pip install --quiet pyyaml
 
-      # Configure Git so any GitHub URL uses the PAT stored in CROSS_REPO_TOKEN
+      # Rewrite any github.com URL to include your PAT for cross‑repo push
       - name: Configure git for cross‑repo pushes
         run: |
           git config --global url."https://x-access-token:${{ secrets.CROSS_REPO_TOKEN }}@github.com/".insteadOf https://github.com/
@@ -44,13 +44,11 @@ jobs:
             --workdir . \
             --output request_processing.json
 
-      # Parse the summary file to extract the actions list; save it in stdout for the next step
       - name: Read actions from summary
         id: read_actions
         run: |
-          python3 -c "import json, sys; data=json.load(open('request_processing.json')); print(data.get('actions', []))"
+          python3 -c "import json; print(json.load(open('request_processing.json')).get('actions', []))"
 
-      # If there are actions, clone target repos, commit changes, push, and open PRs
       - name: Apply changes and create PRs
         if: steps.read_actions.outputs.stdout != '[]'
         env:
@@ -62,14 +60,13 @@ jobs:
           data = json.load(open('request_processing.json'))
           actions = data.get('actions', [])
           for action in actions:
-              repo     = action['repo']
-              branch   = action['branch']
-              commit   = action['commit_message']
-              pr_title = action['pr_title']
-              pr_body  = action['pr_body']
-              changes  = action['changes']
-              repo_dir = f"tmp/{repo.replace('/', '_')}"
-              # Clone target repository with auth (git config already rewrites URL)
+              repo      = action['repo']
+              branch    = action['branch']
+              commit    = action['commit_message']
+              pr_title  = action['pr_title']
+              pr_body   = action['pr_body']
+              changes   = action['changes']
+              repo_dir  = f"tmp/{repo.replace('/', '_')}"
               subprocess.run(['git', 'clone', f'https://github.com/{repo}.git', repo_dir], check=True)
               subprocess.run(['git', '-C', repo_dir, 'checkout', '-b', branch], check=True)
               for change in changes:
@@ -82,7 +79,6 @@ jobs:
               subprocess.run(['git', '-C', repo_dir, 'add', '.'], check=True)
               subprocess.run(['git', '-C', repo_dir, 'commit', '-m', commit], check=True)
               subprocess.run(['git', '-C', repo_dir, 'push', '--set-upstream', 'origin', branch], check=True)
-              # Create a pull request using GitHub CLI
               subprocess.run(['gh', 'pr', 'create',
                               '--repo', repo,
                               '--head', branch,
@@ -93,5 +89,7 @@ jobs:
           PY
 
       - name: Comment on the issue with summary
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           gh issue comment ${{ github.event.issue.number }} --body "**VPC Service Controls request processed.**\n\`\`\`json\n$(cat request_processing.json)\n\`\`\`"
