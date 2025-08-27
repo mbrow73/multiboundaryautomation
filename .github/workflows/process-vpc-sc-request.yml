@@ -31,7 +31,7 @@ jobs:
       - name: Install Python dependencies
         run: python -m pip install --quiet pyyaml
 
-      # Rewrite any github.com URL to include your PAT for cross‑repo push
+      # Configure Git to use your PAT for any github.com URL
       - name: Configure git for cross‑repo pushes
         run: |
           git config --global url."https://x-access-token:${{ secrets.CROSS_REPO_TOKEN }}@github.com/".insteadOf https://github.com/
