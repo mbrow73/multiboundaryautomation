@@ -1,10 +1,10 @@
 perimeters:
   test-perim-a:
     # Name of the repository that contains the perimeter configuration.
-    repo: test-perim-a-config
+    repo: mbrow73/test-perim-a-config
     # Relative path to the TFVARs file within that repo. The hub will update this file with ingress/egress rules.
     # Path to the HCL tfvars file. The automation will update this file with ingress and egress policies.
-    tfvars_file: terraform.auto.tfvars
+    tfvars_file: mbrow73/terraform.auto.tfvars
     # Relative path to the access level definitions file. New access levels will be appended here.
     accesslevel_file: accesslevel.tf
     # Numeric Access Context Manager policy ID used when building access level URIs. Remove the "accessPolicies/" prefix; Terraform expects just the numeric ID.
