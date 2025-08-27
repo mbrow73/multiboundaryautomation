@@ -30,7 +30,6 @@ jobs:
       - name: Install dependencies
         run: python -m pip install --quiet pyyaml
 
-      # Configure Git to use your PAT for cross-repo pushes
       - name: Configure git for cross‑repo pushes
         run: |
           git config --global url."https://x-access-token:${{ secrets.CROSS_REPO_TOKEN }}@github.com/".insteadOf https://github.com/
@@ -43,7 +42,6 @@ jobs:
             --workdir . \
             --output request_processing.json
 
-      # Safely read actions from summary (if the file is missing, return an empty list)
       - name: Read actions from summary
         id: read_actions
         run: |
@@ -59,16 +57,18 @@ jobs:
           CROSS_REPO_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
           GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
         run: |
+          if [ ! -f request_processing.json ]; then
+            echo "request_processing.json not found; skipping PR creation."
+            exit 0
+          fi
           python3 - <<'PY'
           import json, os, re, subprocess
 
           def append_policies(existing_tfvars, new_ingress, new_egress, justification):
-              """Append new policy blocks to existing ingress/egress arrays."""
               def merge_array(content, array_name, new_items):
                   pattern = re.compile(rf'({array_name}\\s*=\\s*\\[)(.*?)(\\])', re.DOTALL)
                   m = pattern.search(content)
                   if not m:
-                      # If array is missing, create it
                       return content + f"\n{array_name} = [\n" + ",\n".join(new_items) + "\n]\n"
                   before, body, after = m.groups()
                   body = body.rstrip()
@@ -83,20 +83,18 @@ jobs:
                   items = []
                   for hcl in new_ingress:
                       if justification:
-                          for line in justification.split("\n"):
+                          for line in justification.split("\\n"):
                               items.append(f"  # {line}")
-                      items.extend(["  " + ln for ln in hcl.split("\n")])
-                  content = merge_array(content, "ingress_policies", ["\n".join(items)])
-
+                      items.extend(["  " + ln for ln in hcl.split("\\n")])
+                  content = merge_array(content, "ingress_policies", ["\\n".join(items)])
               if new_egress:
                   items = []
                   for hcl in new_egress:
                       if justification:
-                          for line in justification.split("\n"):
+                          for line in justification.split("\\n"):
                               items.append(f"  # {line}")
-                      items.extend(["  " + ln for ln in hcl.split("\n")])
-                  content = merge_array(content, "egress_policies", ["\n".join(items)])
-
+                      items.extend(["  " + ln for ln in hcl.split("\\n")])
+                  content = merge_array(content, "egress_policies", ["\\n".join(items)])
               return content
 
           data = json.load(open('request_processing.json'))
@@ -114,10 +112,9 @@ jobs:
               for change in changes:
                   path = os.path.join(repo_dir, change['file'])
                   new_content = change['content']
-                  # Extract HCL blocks from the new content
-                  new_blocks = re.findall(r'\{\n.*?\}', new_content, re.DOTALL)
+                  new_blocks  = re.findall(r'\\{\\n.*?\\}', new_content, re.DOTALL)
                   new_ing = []
-                  new_eg = []
+                  new_eg  = []
                   if "ingress_policies" in new_content:
                       new_ing.extend(new_blocks)
                   if "egress_policies" in new_content:
