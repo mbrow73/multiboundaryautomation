@@ -30,6 +30,7 @@ jobs:
       - name: Install dependencies
         run: python -m pip install --quiet pyyaml
 
+      # Configure Git to use your PAT for cross-repo pushes
       - name: Configure git for cross‑repo pushes
         run: |
           git config --global url."https://x-access-token:${{ secrets.CROSS_REPO_TOKEN }}@github.com/".insteadOf https://github.com/
@@ -42,6 +43,7 @@ jobs:
             --workdir . \
             --output request_processing.json
 
+      # Safely read actions from summary (if the file is missing, return an empty list)
       - name: Read actions from summary
         id: read_actions
         run: |
@@ -49,6 +51,7 @@ jobs:
             python3 -c "import json; print(json.load(open('request_processing.json')).get('actions', []))"
           else
             echo "[]"
+          fi
 
       - name: Apply changes and create PRs
         if: steps.read_actions.outputs.stdout != '[]'
@@ -58,14 +61,14 @@ jobs:
         run: |
           python3 - <<'PY'
           import json, os, re, subprocess
+
           def append_policies(existing_tfvars, new_ingress, new_egress, justification):
-              # Append new ingress policies
+              """Append new policy blocks to existing ingress/egress arrays."""
               def merge_array(content, array_name, new_items):
-                  # Look for array_name = [ ... ] in the file; append items before the closing bracket
                   pattern = re.compile(rf'({array_name}\\s*=\\s*\\[)(.*?)(\\])', re.DOTALL)
                   m = pattern.search(content)
                   if not m:
-                      # If not found, create the array
+                      # If array is missing, create it
                       return content + f"\n{array_name} = [\n" + ",\n".join(new_items) + "\n]\n"
                   before, body, after = m.groups()
                   body = body.rstrip()
@@ -77,23 +80,23 @@ jobs:
 
               content = existing_tfvars
               if new_ingress:
-                  # Prepend justification as comments above each new ingress item
-                  new_ing = []
+                  items = []
                   for hcl in new_ingress:
                       if justification:
                           for line in justification.split("\n"):
-                              new_ing.append(f"  # {line}")
-                      new_ing.extend(["  " + ln for ln in hcl.split("\n")])
-                  content = merge_array(content, "ingress_policies", [ "\n".join(new_ing) ])
+                              items.append(f"  # {line}")
+                      items.extend(["  " + ln for ln in hcl.split("\n")])
+                  content = merge_array(content, "ingress_policies", ["\n".join(items)])
 
               if new_egress:
-                  new_eg = []
+                  items = []
                   for hcl in new_egress:
                       if justification:
                           for line in justification.split("\n"):
-                              new_eg.append(f"  # {line}")
-                      new_eg.extend(["  " + ln for ln in hcl.split("\n")])
-                  content = merge_array(content, "egress_policies", [ "\n".join(new_eg) ])
+                              items.append(f"  # {line}")
+                      items.extend(["  " + ln for ln in hcl.split("\n")])
+                  content = merge_array(content, "egress_policies", ["\n".join(items)])
+
               return content
 
           data = json.load(open('request_processing.json'))
@@ -110,18 +113,21 @@ jobs:
 
               for change in changes:
                   path = os.path.join(repo_dir, change['file'])
-                  # Collect new ingress/egress HCL blocks from the change
                   new_content = change['content']
-                  new_ing = re.findall(r'\\{\n.*?\\}', new_content, re.DOTALL)
-                  new_eg = re.findall(r'\\{\n.*?\\}', new_content, re.DOTALL)
-                  # Read existing file if it exists
+                  # Extract HCL blocks from the new content
+                  new_blocks = re.findall(r'\{\n.*?\}', new_content, re.DOTALL)
+                  new_ing = []
+                  new_eg = []
+                  if "ingress_policies" in new_content:
+                      new_ing.extend(new_blocks)
+                  if "egress_policies" in new_content:
+                      new_eg.extend(new_blocks)
                   existing = ""
                   if os.path.exists(path):
                       with open(path, 'r') as f:
                           existing = f.read()
-                  updated = append_policies(existing, new_ing if "ingress_policies" in new_content else [],
-                                            new_eg if "egress_policies" in new_content else [],
-                                            "")  # justification already in HCL
+                  updated = append_policies(existing, new_ing, new_eg, "")
+                  os.makedirs(os.path.dirname(path), exist_ok=True)
                   with open(path, 'w') as f:
                       f.write(updated)
 
