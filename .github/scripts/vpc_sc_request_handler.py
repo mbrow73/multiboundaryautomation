@@ -192,13 +192,32 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
                     part = part.strip()
                     if part:
                         destinations.append(part)
-        # Extract identities
+        # Extract identities and normalise raw identities without a prefix.
         identities: List[str] = []
         for val in values.get("Identities", []):
             for part in re.split(r",", val):
                 part = part.strip()
-                if part:
-                    identities.append(part)
+                if not part:
+                    continue
+                # If the identity does not contain a type prefix, attempt to infer it.
+                # Many requesters omit the `serviceAccount:` or `user:` prefix.  We inspect
+                # the address to choose a sensible default.  Service accounts always end
+                # with `.iam.gserviceaccount.com` or `.gserviceaccount.com`.  Group
+                # identities typically contain `googlegroups.com` or start with `group-`.
+                # If none of these patterns match, assume a user identity.
+                if ":" not in part:
+                    lower_part = part.lower()
+                    # service accounts typically include gserviceaccount.com
+                    if lower_part.endswith(".iam.gserviceaccount.com") or lower_part.endswith(".gserviceaccount.com"):
+                        part = f"serviceAccount:{part}"
+                    # heuristically treat google group addresses as group identities
+                    elif "googlegroups.com" in lower_part or lower_part.startswith("group-"):
+                        part = f"group:{part}"
+                    # if it's a bare email address, default to a user
+                    elif "@" in part:
+                        part = f"user:{part}"
+                    # otherwise leave unchanged (could be a special principal like principalSet or domain)
+                identities.append(part)
         rules.append({
             "direction": direction,
             "services": services,
