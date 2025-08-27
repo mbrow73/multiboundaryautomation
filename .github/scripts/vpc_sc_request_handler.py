@@ -50,13 +50,17 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
     reqid_match = re.search(r"Request ID.*?:\s*([A-Za-z0-9_-]+)", issue_text, re.IGNORECASE)
     reqid = reqid_match.group(1).strip() if reqid_match else f"REQ-{uuid.uuid4().hex[:8]}"
 
-    # Extract perimeter names.  Accept comma-separated list or one per line.
+    # Top‑level perimeter names are deprecated in favour of per-rule perimeters.
+    # Extract any global perimeter names for backward compatibility.
     perimeters: List[str] = []
-    perimeter_regex = re.compile(r"Perimeter Name\s*:?\s*([A-Za-z0-9_-]+)", re.IGNORECASE)
-    for match in perimeter_regex.finditer(issue_text):
-        perim = match.group(1).strip()
-        if perim:
-            perimeters.append(perim)
+    perimeter_regex = re.compile(r"^Perimeter Name\s*:?(.*)$", re.IGNORECASE | re.MULTILINE)
+    match_global_perimeter = perimeter_regex.search(issue_text)
+    if match_global_perimeter:
+        value = match_global_perimeter.group(1).strip()
+        for part in re.split(r",", value):
+            perim = part.strip()
+            if perim:
+                perimeters.append(perim)
 
     # TTL is no longer used.  Leave as empty string for backward compatibility.
     ttl = ""
@@ -89,6 +93,17 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
                 rf"{label}\s*\n(.*?)(?:\n\s*\n|\Z)", text, re.IGNORECASE | re.DOTALL
             )
             return sec_match.group(1).strip() if sec_match else ""
+
+        # Perimeter names for this rule (comma or newline separated).  If
+        # unspecified, fall back to top‑level perimeters.
+        perim_raw = extract_section("Perimeter Name", rule_text)
+        perim_names: List[str] = []
+        for part in re.split(r"[,\n]+", perim_raw):
+            name = part.strip()
+            if name:
+                perim_names.append(name)
+        if not perim_names:
+            perim_names = perimeters.copy()
 
         services_raw = extract_section("Services", rule_text)
         services: List[str] = []
@@ -142,11 +157,13 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
                 "sources": sources,
                 "destinations": destinations,
                 "identities": identities,
+                "perimeters": perim_names,
             }
         )
 
     return {
         "reqid": reqid,
+        # top‑level perimeters retained for backward compatibility
         "perimeters": perimeters,
         "ttl": ttl,
         "third_party": third_party,
@@ -175,59 +192,43 @@ def build_actions(parsed: Dict[str, Any], router: Dict[str, Any]) -> List[Dict[s
     justification = parsed.get("justification") or ""
     rules: List[Dict[str, Any]] = parsed.get("rules", [])
 
-    for perim in parsed.get("perimeters", []):
-        perim_info = router.get("perimeters", {}).get(perim)
-        if not perim_info:
-            continue  # Unknown perimeter
-        repo = perim_info.get("repo")
-        tfvars_file = perim_info.get("tfvars_file")
-        access_file = perim_info.get("accesslevel_file")
-        policy_id = perim_info.get("policy_id")
+    # Aggregate policies per perimeter
+    perim_map: Dict[str, Dict[str, Any]] = {}
+    # Helper to generate safe access level names
+    def safe_name(s: str) -> str:
+        return re.sub(r"[^A-Za-z0-9]", "-", s.lower())
 
-        branch = f"vpcsc/{reqid.lower()}-{perim}"
-        commit_msg = f"[VPC-SC] Apply request {reqid}"
-        pr_title = f"VPC SC request {reqid} for {perim}"
-        pr_body_lines = [
-            f"This pull request applies the VPC Service Controls request `{reqid}` to perimeter `{perim}`.",
-        ]
-        if third_party:
-            pr_body_lines.append(f"**Third‑party:** {third_party}")
-        if justification:
-            pr_body_lines.append("\n**Justification:**\n" + justification)
-        pr_body = "\n\n".join(pr_body_lines)
+    for idx, rule in enumerate(rules):
+        direction = rule.get("direction", "").upper()
+        services = rule.get("services", [])
+        methods = rule.get("methods", [])
+        permissions = rule.get("permissions", [])
+        sources = rule.get("sources", [])
+        destinations = rule.get("destinations", [])
+        identities = rule.get("identities", [])
+        rule_perims: List[str] = rule.get("perimeters", []) or parsed.get("perimeters", [])
 
-        ingress_policies: List[Dict[str, Any]] = []
-        egress_policies: List[Dict[str, Any]] = []
-        access_level_snippets: List[str] = []
+        # Build operations mapping per service
+        operations: Dict[str, Dict[str, Any]] = {}
+        for svc in services:
+            svc_dict: Dict[str, Any] = {}
+            svc_dict["methods"] = methods.copy() if methods else []
+            svc_dict["permissions"] = permissions.copy() if permissions else []
+            operations[svc] = svc_dict
 
-        # Generate a simple name prefix for access levels
-        def safe_name(s: str) -> str:
-            return re.sub(r"[^A-Za-z0-9]", "-", s.lower())
-
-        for idx, rule in enumerate(rules):
-            direction = rule.get("direction", "").upper()
-            services = rule.get("services", [])
-            methods = rule.get("methods", [])
-            permissions = rule.get("permissions", [])
-            sources = rule.get("sources", [])
-            destinations = rule.get("destinations", [])
-            identities = rule.get("identities", [])
-
-            # Build operations mapping for ingress/egress.  Each service maps to
-            # allowed methods and permissions.  Permissions are currently empty.
-            operations: Dict[str, Dict[str, Any]] = {}
-            for svc in services:
-                svc_dict: Dict[str, Any] = {}
-                svc_dict["methods"] = methods.copy() if methods else []
-                svc_dict["permissions"] = permissions.copy() if permissions else []
-                operations[svc] = svc_dict
-
+        for perim in rule_perims:
+            perim_info = router.get("perimeters", {}).get(perim)
+            if not perim_info:
+                continue
+            data = perim_map.setdefault(perim, {
+                "ingress_policies": [],
+                "egress_policies": [],
+                "access_levels": [],
+            })
+            policy_id = perim_info.get("policy_id")
             if direction == "INGRESS":
-                # Build ingress policy object
-                ingress_from: Dict[str, Any] = {
-                    "identity_type": "",
-                }
-                # Determine sources: IP ranges require an access level
+                # Build ingress policy
+                ingress_from: Dict[str, Any] = {"identity_type": ""}
                 access_levels_list: List[str] = []
                 resource_sources: List[str] = []
                 ip_subnets: List[str] = []
@@ -235,14 +236,12 @@ def build_actions(parsed: Dict[str, Any], router: Dict[str, Any]) -> List[Dict[s
                     if re.match(r"^\d+\.\d+\.\d+\.\d+(\/\d+)?$", src):
                         ip_subnets.append(src)
                     else:
-                        # treat as resource
                         resource_sources.append(src)
-                # Create access level if ip_subnets found
                 if ip_subnets:
                     level_name = f"{safe_name(reqid)}-rule{idx+1}"
                     access_uri = f"accessPolicies/{policy_id}/accessLevels/{level_name}"
                     access_levels_list.append(access_uri)
-                    # Build HCL snippet for the access level
+                    # Build access level snippet
                     hcl_lines = [
                         f"resource \"google_access_context_manager_access_level\" \"{level_name}\" {{",
                         f"  name   = \"accessPolicies/{policy_id}/accessLevels/{level_name}\"",
@@ -257,11 +256,9 @@ def build_actions(parsed: Dict[str, Any], router: Dict[str, Any]) -> List[Dict[s
                         "}\n",
                     ]
                     hcl_lines = [line for line in hcl_lines if line]
-                    access_level_snippets.append("\n".join(hcl_lines))
-                # Build sources object
-                sources_obj: Dict[str, Any] = {"resources": resource_sources, "access_levels": access_levels_list}
+                    data["access_levels"].append("\n".join(hcl_lines))
+                sources_obj = {"resources": resource_sources, "access_levels": access_levels_list}
                 ingress_from["sources"] = sources_obj
-                # Identities
                 if identities:
                     ingress_from["identities"] = identities
                 ingress_to: Dict[str, Any] = {}
@@ -269,62 +266,61 @@ def build_actions(parsed: Dict[str, Any], router: Dict[str, Any]) -> List[Dict[s
                     ingress_to["resources"] = destinations
                 if operations:
                     ingress_to["operations"] = operations
-                ingress_policies.append({
-                    "from": ingress_from,
-                    "to": ingress_to,
-                })
-
+                data["ingress_policies"].append({"from": ingress_from, "to": ingress_to})
             elif direction == "EGRESS":
-                # Build egress policy object
                 egress_from: Dict[str, Any] = {"identity_type": ""}
                 if identities:
                     egress_from["identities"] = identities
-                # For egress we ignore sources; only identities are used
                 egress_to: Dict[str, Any] = {}
                 if destinations:
                     egress_to["resources"] = destinations
                 if operations:
                     egress_to["operations"] = operations
-                egress_policies.append({
-                    "from": egress_from,
-                    "to": egress_to,
-                })
+                data["egress_policies"].append({"from": egress_from, "to": egress_to})
             else:
-                # Unknown or unsupported direction; skip
                 continue
 
-        # Construct tfvars content.  Embed TTL and justification as comments.
+    # Build actions from aggregated data
+    for perim, data in perim_map.items():
+        perim_info = router.get("perimeters", {}).get(perim)
+        if not perim_info:
+            continue
+        repo = perim_info.get("repo")
+        tfvars_file = perim_info.get("tfvars_file")
+        access_file = perim_info.get("accesslevel_file")
+        branch = f"vpcsc/{reqid.lower()}-{perim}"
+        commit_msg = f"[VPC-SC] Apply request {reqid}"
+        pr_title = f"VPC SC request {reqid} for {perim}"
+        pr_body_lines = [f"This pull request applies the VPC Service Controls request `{reqid}` to perimeter `{perim}`."]
+        if third_party:
+            pr_body_lines.append(f"**Third‑party:** {third_party}")
+        if justification:
+            pr_body_lines.append("\n**Justification:**\n" + justification)
+        pr_body = "\n\n".join(pr_body_lines)
         policy_obj = {
-            "ingress_policies": ingress_policies,
-            "egress_policies": egress_policies,
+            "ingress_policies": data["ingress_policies"],
+            "egress_policies": data["egress_policies"],
         }
-        tfvars_content_lines = []
+        tfvars_content_lines: List[str] = []
         if justification:
             for line in justification.split("\n"):
                 tfvars_content_lines.append(f"# {line}")
         tfvars_content_lines.append(json.dumps(policy_obj, indent=2))
         tfvars_content = "\n".join(tfvars_content_lines) + "\n"
-
-        # Combine access level snippets
-        access_content = "\n\n".join(access_level_snippets) + ("\n" if access_level_snippets else "")
-
+        access_content = "\n\n".join(data["access_levels"]) + ("\n" if data["access_levels"] else "")
         changes: List[Dict[str, Any]] = []
         if tfvars_file:
             changes.append({"file": tfvars_file, "content": tfvars_content})
         if access_file and access_content:
             changes.append({"file": access_file, "content": access_content})
-
-        actions.append(
-            {
-                "repo": repo,
-                "branch": branch,
-                "commit_message": commit_msg,
-                "pr_title": pr_title,
-                "pr_body": pr_body,
-                "changes": changes,
-            }
-        )
-
+        actions.append({
+            "repo": repo,
+            "branch": branch,
+            "commit_message": commit_msg,
+            "pr_title": pr_title,
+            "pr_body": pr_body,
+            "changes": changes,
+        })
     return actions
 
 
