@@ -1,20 +1,20 @@
 ---
 name: VPC Service Controls Request
-about: Request to add one or more ingress/egress rules to a VPC Service Controls perimeter
+about: Request to add one or more ingress/egress rules to one or more VPC Service Controls perimeters
 labels: vpc-sc-request
 ---
 
-Thank you for submitting a VPC Service Controls request. Use the sections below to define one or more rules. For multiple rules, copy the **Rule** section as many times as needed. If different services need different methods/permissions, create separate rules.
+Thank you for submitting a VPC Service Controls request. Use the sections below to define one or more rules. For multiple rules, copy the **Rule** section as many times as needed. Each rule can target one or more perimeters.
 
 ### Request ID
 Provide a unique request identifier (e.g., `REQ123456`).
 
-### Perimeter Name
-Name(s) of the VPC Service Controls perimeter(s) to update.  If you need to target more than one perimeter, separate them with commas or list each on its own line. Example:
-test-perim-a, test-perim-b
-
 ### Rules
 Below is a template for one rule. Copy this entire block for each additional rule.
+
+**Perimeter Name(s)**  
+Specify the perimeter or perimeters this rule applies to. Separate multiple perimeters with commas or list each on its own line. Example:  
+`test-perim-a, test-perim-b`
 
 **Direction (INGRESS or EGRESS)**  
 Specify whether this rule is for **INGRESS** (allowing traffic into the perimeter) or **EGRESS** (allowing traffic out of the perimeter).
