@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-VPC Service Controls request handler.
+VPC Service Controls request handler with TLM-ID support.
 Parses a GitHub issue body into per-rule structures, normalises identities,
-and builds ingress/egress policy objects in HCL-ready form, using a Terraform
-module to create access levels from IP subnetworks.
+and builds ingress/egress policy objects in HCL-ready form. When IP ranges
+are specified in ingress rules, it uses a module to create access levels
+whose names come from the TLM-ID field (if provided).
 """
 
 import argparse
@@ -27,8 +28,11 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
             perim = part.strip()
             if perim and perim != "(s)":
                 perimeters.append(perim)
-    third_party_match = re.search(r"Third\s*-?Party\s*Name.*?:\s*(.+)", issue_text, re.IGNORECASE)
-    third_party = third_party_match.group(1).strip() if third_party_match else ""
+
+    # Capture TLM-ID from "TLM-ID (if applicable)" or similar
+    tlm_match = re.search(r"TLM[-\u2011\u2012\u2013\u2014]?ID.*?:\s*(.+)", issue_text, re.IGNORECASE)
+    tlm_id = tlm_match.group(1).strip() if tlm_match else ""
+
     justification = ""
     just_match = re.search(r"Justification\s*\n+([^\n]+)", issue_text, re.IGNORECASE)
     if just_match:
@@ -48,10 +52,10 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
         headings = [
             "Perimeter Name", "Perimeter Name(s)", "Services", "Methods",
             "Permissions", "Source / From", "From", "Destination / To",
-            "To", "Identities", "Direction", "Third-Party Name",
-            "Third-Party Name (if applicable)", "Justification",
+            "To", "Identities", "Direction", "TLM-ID", "TLM-ID (if applicable)",
+            "Justification",
         ]
-        non_data_headings = {"Direction", "Third-Party Name", "Third-Party Name (if applicable)", "Justification"}
+        non_data_headings = {"Direction", "TLM-ID", "TLM-ID (if applicable)", "Justification"}
         values: Dict[str, List[str]] = {h: [] for h in headings if h not in non_data_headings}
         current_heading: str | None = None
 
@@ -78,12 +82,12 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
             if matched_heading:
                 key = matched_heading.lower().replace("\u2011", "-").replace("\u2012", "-") \
                                              .replace("\u2013", "-").replace("\u2014", "-")
-                if key.startswith("direction") or "third-party" in key or key == "justification":
+                if key.startswith("direction") or "tlm-id" in key or key == "justification":
                     current_heading = None
                 else:
                     current_heading = matched_heading
                 continue
-            if re.match(r"^third[-\u2011\u2012\u2013\u2014]?party name", normalized, re.IGNORECASE):
+            if re.match(r"^tlm[-\u2011\u2012\u2013\u2014]?id", normalized, re.IGNORECASE):
                 current_heading = None
                 continue
             if current_heading:
@@ -145,7 +149,7 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
         "reqid": reqid,
         "perimeters": perimeters,
         "ttl": "",
-        "third_party": third_party,
+        "tlm_id": tlm_id,
         "justification": justification,
         "rules": rules,
     }
@@ -155,6 +159,7 @@ def build_actions(parsed: Dict[str, Any], router: Dict[str, Any]) -> List[Dict[s
     actions: List[Dict[str, Any]] = []
     reqid = parsed.get("reqid") or f"REQ-{uuid.uuid4().hex[:8]}"
     justification = parsed.get("justification") or ""
+    tlm_id = parsed.get("tlm_id") or ""
     rules: List[Dict[str, Any]] = parsed.get("rules", [])
 
     perim_map: Dict[str, Dict[str, Any]] = {}
@@ -198,7 +203,8 @@ def build_actions(parsed: Dict[str, Any], router: Dict[str, Any]) -> List[Dict[s
                     else:
                         resource_sources.append(src)
                 if ip_subnets:
-                    level_name = f"{safe_name(reqid)}-rule{idx+1}"
+                    raw_name = tlm_id or f"{reqid}-rule{idx+1}"
+                    level_name = safe_name(raw_name)
                     access_levels_list.append(level_name)
                     module_lines = [
                         f'module "vpc-service-controls-access-level_{level_name}" {{',
