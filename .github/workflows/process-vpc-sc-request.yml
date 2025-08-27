@@ -64,38 +64,26 @@ jobs:
           python3 - <<'PY'
           import json, os, re, subprocess
 
-          def append_policies(existing_tfvars, new_ingress, new_egress, justification):
-              def merge_array(content, array_name, new_items):
-                  pattern = re.compile(rf'({array_name}\\s*=\\s*\\[)(.*?)(\\])', re.DOTALL)
-                  m = pattern.search(content)
+          def append_policies(existing_tfvars, new_ingress_array, new_egress_array, justification):
+              def add_to_array(content, array_name, new_item):
+                  pattern = rf"{array_name}\\s*=\\s*\\[(.*?)\\]"
+                  m = re.search(pattern, content, re.DOTALL)
                   if not m:
-                      return content + f"\n{array_name} = [\n" + ",\n".join(new_items) + "\n]\n"
-                  before, body, after = m.groups()
+                      return content + f"\n{array_name} = [\n" + new_item.strip() + "\n]\n"
+                  before, body, after = content[:m.start(1)], m.group(1), content[m.end(1):]
                   body = body.rstrip()
                   if body:
-                      body += ",\n" + ",\n".join(new_items)
+                      body = body + ",\n" + new_item.strip() + "\n"
                   else:
-                      body = "\n" + ",\n".join(new_items)
-                  return content[:m.start()] + before + body + after + content[m.end():]
+                      body = "\n" + new_item.strip() + "\n"
+                  return before + body + after
 
-              content = existing_tfvars
-              if new_ingress:
-                  items = []
-                  for hcl in new_ingress:
-                      if justification:
-                          for line in justification.split("\\n"):
-                              items.append(f"  # {line}")
-                      items.extend(["  " + ln for ln in hcl.split("\\n")])
-                  content = merge_array(content, "ingress_policies", ["\\n".join(items)])
-              if new_egress:
-                  items = []
-                  for hcl in new_egress:
-                      if justification:
-                          for line in justification.split("\\n"):
-                              items.append(f"  # {line}")
-                      items.extend(["  " + ln for ln in hcl.split("\\n")])
-                  content = merge_array(content, "egress_policies", ["\\n".join(items)])
-              return content
+              updated = existing_tfvars
+              if new_ingress_array:
+                  updated = add_to_array(updated, "ingress_policies", new_ingress_array)
+              if new_egress_array:
+                  updated = add_to_array(updated, "egress_policies", new_egress_array)
+              return updated
 
           data = json.load(open('request_processing.json'))
           for action in data.get('actions', []):
@@ -112,18 +100,24 @@ jobs:
               for change in changes:
                   path = os.path.join(repo_dir, change['file'])
                   new_content = change['content']
-                  new_blocks  = re.findall(r'\\{\\n.*?\\}', new_content, re.DOTALL)
-                  new_ing = []
-                  new_eg  = []
+                  # extract the array bodies from the new content
+                  ingress_body = ""
+                  egress_body  = ""
                   if "ingress_policies" in new_content:
-                      new_ing.extend(new_blocks)
+                      try:
+                          ingress_body = new_content.split("ingress_policies = [",1)[1].split("]",1)[0]
+                      except IndexError:
+                          pass
                   if "egress_policies" in new_content:
-                      new_eg.extend(new_blocks)
+                      try:
+                          egress_body = new_content.split("egress_policies  = [",1)[1].split("]",1)[0]
+                      except IndexError:
+                          pass
                   existing = ""
                   if os.path.exists(path):
                       with open(path, 'r') as f:
                           existing = f.read()
-                  updated = append_policies(existing, new_ing, new_eg, "")
+                  updated = append_policies(existing, ingress_body, egress_body, "")
                   os.makedirs(os.path.dirname(path), exist_ok=True)
                   with open(path, 'w') as f:
                       f.write(updated)
@@ -131,7 +125,6 @@ jobs:
               subprocess.run(['git', '-C', repo_dir, 'config', 'user.email', 'bot@example.com'], check=True)
               subprocess.run(['git', '-C', repo_dir, 'config', 'user.name', 'VPC SC Bot'], check=True)
               subprocess.run(['git', '-C', repo_dir, 'add', '.'], check=True)
-              # commit only if there are staged changes
               status = subprocess.run(['git', '-C', repo_dir, 'status', '--porcelain'], capture_output=True, text=True)
               if status.stdout.strip():
                   subprocess.run(['git', '-C', repo_dir, 'commit', '-m', commit], check=True)
