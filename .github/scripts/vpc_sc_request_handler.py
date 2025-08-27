@@ -108,24 +108,31 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
             "Identities",
             # Include Direction as a heading to prevent it from being captured as a value
             "Direction",
+            # Treat Third‑Party Name and Justification as headings so they break value collection
+            "Third-Party Name",
+            "Third-Party Name (if applicable)",
+            "Justification",
         ]
-        # Initialise values for headings we intend to capture (exclude Direction)
-        values: Dict[str, List[str]] = {h: [] for h in headings if h != "Direction"}
+        # Initialise values for headings we intend to capture (exclude non-data headings)
+        non_data_headings = {"Direction", "Third-Party Name", "Third-Party Name (if applicable)", "Justification"}
+        values: Dict[str, List[str]] = {h: [] for h in headings if h not in non_data_headings}
         current_heading: str | None = None
         for line in block.splitlines():
             stripped = line.strip()
             if not stripped:
                 continue
-            normalized = re.sub(r"[*`]+", "", stripped)
+            normalized = re.sub(r"[*`#]+", "", stripped).strip()
             matched_heading = None
             for h in headings:
                 if re.match(rf"^{re.escape(h)}", normalized, re.IGNORECASE):
                     matched_heading = h
                     break
             if matched_heading:
-                # If this is the Direction heading, do not set current_heading
-                # so that the following line (e.g., "INGRESS") is not captured as a value.
-                if matched_heading.lower().startswith("direction"):
+                # If this heading is not meant to capture values (e.g. Direction,
+                # Third‑Party Name, Justification), reset current_heading.  Otherwise
+                # use it as the current heading to collect subsequent lines.
+                skip_headings = {"direction", "third-party name", "third-party name (if applicable)", "justification"}
+                if matched_heading.lower() in skip_headings or matched_heading.lower().startswith("direction"):
                     current_heading = None
                 else:
                     current_heading = matched_heading
@@ -339,16 +346,55 @@ def build_actions(parsed: Dict[str, Any], router: Dict[str, Any]) -> List[Dict[s
         if justification:
             pr_body_lines.append("\n**Justification:**\n" + justification)
         pr_body = "\n\n".join(pr_body_lines)
-        policy_obj = {
-            "ingress_policies": data["ingress_policies"],
-            "egress_policies": data["egress_policies"],
-        }
-        tfvars_content_lines: List[str] = []
+        # Helper to convert Python structures into HCL expressions
+        def to_hcl(value: Any, indent: int = 0) -> str:
+            """Recursively convert dicts/lists/strings to HCL syntax."""
+            indent_str = "  " * indent
+            if isinstance(value, str):
+                return f'"{value}"'
+            if isinstance(value, bool):
+                return "true" if value else "false"
+            if value is None:
+                return "null"
+            if isinstance(value, (int, float)):
+                return str(value)
+            if isinstance(value, list):
+                if not value:
+                    return "[]"
+                # For list of simple values, join on same line; for complex types, pretty print
+                if all(not isinstance(v, (dict, list)) for v in value):
+                    return "[" + ", ".join(to_hcl(v, indent) for v in value) + "]"
+                lines = ["["]
+                for item in value:
+                    lines.append(("  " * (indent + 1)) + to_hcl(item, indent + 1) + ",")
+                lines.append(indent_str + "]")
+                return "\n".join(lines)
+            if isinstance(value, dict):
+                if not value:
+                    return "{}"
+                lines = ["{"]
+                for key, val in value.items():
+                    # Quote keys that contain characters other than letters, numbers, underscore
+                    if re.search(r"[^A-Za-z0-9_]", key):
+                        key_repr = f'"{key}"'
+                    else:
+                        key_repr = key
+                    val_repr = to_hcl(val, indent + 1)
+                    lines.append(("  " * (indent + 1)) + f"{key_repr} = {val_repr}")
+                lines.append(indent_str + "}")
+                return "\n".join(lines)
+            # Fallback to JSON string
+            return json.dumps(value)
+
+        # Build HCL tfvars content: assign ingress_policies and egress_policies separately
+        tfvars_lines: List[str] = []
         if justification:
             for line in justification.split("\n"):
-                tfvars_content_lines.append(f"# {line}")
-        tfvars_content_lines.append(json.dumps(policy_obj, indent=2))
-        tfvars_content = "\n".join(tfvars_content_lines) + "\n"
+                tfvars_lines.append(f"# {line}")
+        # Add ingress and egress policies assignments
+        tfvars_lines.append(f"ingress_policies = {to_hcl(data['ingress_policies'])}")
+        tfvars_lines.append(f"egress_policies  = {to_hcl(data['egress_policies'])}")
+        tfvars_content = "\n".join(tfvars_lines) + "\n"
         access_content = "\n\n".join(data["access_levels"]) + ("\n" if data["access_levels"] else "")
         changes: List[Dict[str, Any]] = []
         if tfvars_file:
