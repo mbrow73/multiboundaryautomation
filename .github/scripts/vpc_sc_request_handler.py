@@ -3,8 +3,7 @@
 VPC Service Controls request handler with TLM-ID support.
 Parses a GitHub issue body into per-rule structures, normalises identities,
 and builds ingress/egress policy objects in HCL-ready form. When IP ranges
-are specified in ingress rules, it uses a module to create access levels
-whose names come from the TLM-ID field (if provided).
+are specified in ingress rules, it uses a module to create access levels.
 """
 
 import argparse
@@ -29,9 +28,17 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
             if perim and perim != "(s)":
                 perimeters.append(perim)
 
-    # Capture TLM-ID from "TLM-ID (if applicable)" or similar
+    # Capture TLM-ID (either inline or on the next line)
     tlm_match = re.search(r"TLM[-\u2011\u2012\u2013\u2014]?ID.*?:\s*(.+)", issue_text, re.IGNORECASE)
-    tlm_id = tlm_match.group(1).strip() if tlm_match else ""
+    if not tlm_match:
+        tlm_match = re.search(r"TLM[-\u2011\u2012\u2013\u2014]?ID.*?\n+([^\n]*)", issue_text, re.IGNORECASE)
+    third_party_match = re.search(r"Third\s*-?Party\s*Name.*?:\s*(.+)", issue_text, re.IGNORECASE)
+    if tlm_match:
+        tlm_id = tlm_match.group(1).strip()
+    elif third_party_match:
+        tlm_id = third_party_match.group(1).strip()
+    else:
+        tlm_id = ""
 
     justification = ""
     just_match = re.search(r"Justification\s*\n+([^\n]+)", issue_text, re.IGNORECASE)
@@ -53,9 +60,11 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
             "Perimeter Name", "Perimeter Name(s)", "Services", "Methods",
             "Permissions", "Source / From", "From", "Destination / To",
             "To", "Identities", "Direction", "TLM-ID", "TLM-ID (if applicable)",
-            "Justification",
+            "Third-Party Name", "Third-Party Name (if applicable)", "Justification",
         ]
-        non_data_headings = {"Direction", "TLM-ID", "TLM-ID (if applicable)", "Justification"}
+        non_data_headings = {"Direction", "TLM-ID", "TLM-ID (if applicable)",
+                             "Third-Party Name", "Third-Party Name (if applicable)",
+                             "Justification"}
         values: Dict[str, List[str]] = {h: [] for h in headings if h not in non_data_headings}
         current_heading: str | None = None
 
@@ -82,12 +91,14 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
             if matched_heading:
                 key = matched_heading.lower().replace("\u2011", "-").replace("\u2012", "-") \
                                              .replace("\u2013", "-").replace("\u2014", "-")
-                if key.startswith("direction") or "tlm-id" in key or key == "justification":
+                if key.startswith("direction") or "tlm-id" in key or "third-party" in key or key == "justification":
                     current_heading = None
                 else:
                     current_heading = matched_heading
                 continue
-            if re.match(r"^tlm[-\u2011\u2012\u2013\u2014]?id", normalized, re.IGNORECASE):
+            # Skip TLM-ID or Third-Party header lines
+            if re.match(r"^(tlm|third)[-\u2011\u2012\u2013\u2014]?id", normalized, re.IGNORECASE) or \
+               re.match(r"^third\s*-?party", normalized, re.IGNORECASE):
                 current_heading = None
                 continue
             if current_heading:
