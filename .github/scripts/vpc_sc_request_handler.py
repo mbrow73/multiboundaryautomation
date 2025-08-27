@@ -27,10 +27,13 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
                 perimeters.append(perim)
     third_party_match = re.search(r"Third\s*-?Party\s*Name.*?:\s*(.+)", issue_text, re.IGNORECASE)
     third_party = third_party_match.group(1).strip() if third_party_match else ""
+    # Capture justification only if there is a non-empty line; otherwise leave blank
     justification = ""
-    just_match = re.search(r"Justification\s*\n+([^\n]+)", issue_text, re.IGNORECASE)
+    just_match = re.search(r"Justification\s*\n+([^\n]*)", issue_text, re.IGNORECASE)
     if just_match:
-        justification = just_match.group(1).strip()
+        candidate = just_match.group(1).strip()
+        if candidate and not candidate.startswith("**"):
+            justification = candidate
 
     rules: List[Dict[str, Any]] = []
     rule_pattern = re.compile(
