@@ -4,7 +4,7 @@ about: Request to add one or more ingress/egress rules to a VPC Service Controls
 labels: vpc-sc-request
 ---
 
-Thank you for submitting a VPC Service Controls request. Use the sections below to define one or more rules. For multiple rules, copy the **Rule** section as many times as needed.
+Thank you for submitting a VPC Service Controls request. Use the sections below to define one or more rules. For multiple rules, copy the **Rule** section as many times as needed. If different services need different methods/permissions, create separate rules.
 
 ### Request ID
 Provide a unique request identifier (e.g., `REQ123456`).
@@ -23,11 +23,15 @@ List the Google APIs/services this rule applies to (one per line or separated by
 `storage.googleapis.com, bigquery.googleapis.com`
 
 **Methods (optional)**  
-List specific RPC methods or permissions to allow. Leave blank to allow all methods. Example:  
-`storage.buckets.get, storage.buckets.list`
+List specific RPC methods or service methods that apply to all services in this rule (comma‑separated or one per line). Example:  
+`storage.buckets.get, storage.objects.get`
+
+**Permissions (optional)**  
+List specific IAM permissions that apply to all services in this rule (comma‑separated or one per line). Example:  
+`bigquery.jobs.get, bigquery.tables.get`
 
 **Source / From (for ingress rules)**  
-For ingress rules, specify the sources that should be allowed. This can include IP ranges (e.g., `192.0.2.0/24`), VPC networks, or identities. Separate multiple sources with commas or list each on its own line. Leave blank for egress rules.
+For ingress rules, specify the sources that should be allowed. This can include IP ranges (e.g., `192.0.2.0/24`), VPC networks, or resources. Separate multiple sources with commas or list each on its own line. Leave blank for egress rules.
 
 **Destination / To (for egress rules)**  
 For egress rules, specify the destinations that should be allowed (e.g., projects or services). Separate multiple destinations with commas or list each on its own line. Leave blank for ingress rules.
