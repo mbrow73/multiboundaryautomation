@@ -14,7 +14,6 @@ from typing import Any, Dict, List
 import yaml  # type: ignore
 
 def parse_issue_body(issue_text: str) -> Dict[str, Any]:
-    # Same parse function as before…
     clean_text = re.sub(r"[\*`]+", "", issue_text)
     reqid_match = re.search(r"Request ID.*?:\s*([A-Za-z0-9_-]+)", clean_text, re.IGNORECASE)
     reqid = reqid_match.group(1).strip() if reqid_match else f"REQ-{uuid.uuid4().hex[:8]}"
@@ -135,13 +134,11 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
     }
 
 def build_actions(parsed: Dict[str, Any], router: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Construct actions based on the parsed request and router mapping."""
     actions: List[Dict[str, Any]] = []
     reqid = parsed.get("reqid") or f"REQ-{uuid.uuid4().hex[:8]}"
     justification = parsed.get("justification") or ""
     rules: List[Dict[str, Any]] = parsed.get("rules", [])
 
-    # Aggregate policies per perimeter
     perim_map: Dict[str, Dict[str, Any]] = {}
     def safe_name(s: str) -> str:
         return re.sub(r"[^A-Za-z0-9]", "-", s.lower())
@@ -156,12 +153,14 @@ def build_actions(parsed: Dict[str, Any], router: Dict[str, Any]) -> List[Dict[s
         identities  = rule.get("identities", [])
         rule_perims: List[str] = rule.get("perimeters", []) or parsed.get("perimeters", [])
 
-        # Build operations dictionary keyed by service
+        # Build operations dictionary keyed by service, defaulting empty methods to ["*"]
         operations: Dict[str, Dict[str, Any]] = {}
         for svc in services:
+            svc_methods = methods.copy() if methods else ["*"]
+            svc_permissions = permissions.copy() if permissions else []
             operations[svc] = {
-                "methods": methods.copy() if methods else [],
-                "permissions": permissions.copy() if permissions else [],
+                "methods": svc_methods,
+                "permissions": svc_permissions,
             }
 
         for perim in rule_perims:
@@ -260,13 +259,12 @@ def build_actions(parsed: Dict[str, Any], router: Dict[str, Any]) -> List[Dict[s
         access_file = perim_info.get("accesslevel_file")
         branch = f"vpcsc/{reqid.lower()}-{perim}"
         commit_msg = f"[VPC-SC] Apply request {reqid}"
-        pr_title   = f"VPC SC request {reqid} for {perim}"
-        pr_body    = (
+        pr_title = f"VPC SC request {reqid} for {perim}"
+        pr_body = (
             f"This pull request applies the VPC Service Controls request `{reqid}` to perimeter `{perim}`."
             + ("\n\n\n**Justification:**\n" + justification if justification else "")
         )
 
-        # Create tfvars content by appending justification before each new rule
         tfvars_lines: List[str] = []
         if data["ingress_policies"]:
             tfvars_lines.append("ingress_policies = [")
@@ -293,8 +291,8 @@ def build_actions(parsed: Dict[str, Any], router: Dict[str, Any]) -> List[Dict[s
             tfvars_lines.append("]")
         else:
             tfvars_lines.append("egress_policies  = []")
-        tfvars_content = "\n".join(tfvars_lines) + "\n"
 
+        tfvars_content = "\n".join(tfvars_lines) + "\n"
         access_content = "\n\n".join(data["access_levels"]) + ("\n" if data["access_levels"] else "")
         changes: List[Dict[str, Any]] = []
         if tfvars_file:
