@@ -80,18 +80,14 @@ jobs:
                   i += 1
               return new_content[idx:i-1].strip()
 
-          def append_to_array(existing_content, array_name, new_item):
-              pattern = rf"{array_name}\\s*=\\s*\\[(.*?)\\]"
-              m = re.search(pattern, existing_content, re.DOTALL)
-              if not m:
-                  return existing_content + f"\n{array_name} = [\n" + new_item + "\n]\n"
-              before, body, after = existing_content[:m.start(1)], m.group(1), existing_content[m.end(1):]
-              body = body.rstrip()
-              if body:
-                  body = body + ",\n" + new_item + "\n"
+          def update_array(existing, array_name, new_body):
+              # Replace the contents of array_name = [ ... ] with new_body
+              pattern = rf"({array_name}\\s*=\\s*\\[)(.*?)(\\])"
+              m = re.search(pattern, existing, re.DOTALL)
+              if m:
+                  return existing[:m.start(2)] + "\n" + new_body + "\n" + existing[m.end(2):]
               else:
-                  body = "\n" + new_item + "\n"
-              return before + body + after
+                  return existing + f"\n{array_name} = [\n{new_body}\n]\n"
 
           data = json.load(open('request_processing.json'))
           for action in data.get('actions', []):
@@ -106,21 +102,21 @@ jobs:
               subprocess.run(['git', '-C', repo_dir, 'checkout', '-b', branch], check=True)
 
               for change in changes:
-                  path = os.path.join(repo_dir, change['file'])
+                  file_path = os.path.join(repo_dir, change['file'])
                   new_content = change['content']
                   ingress_body = extract_array_body(new_content, 'ingress_policies')
                   egress_body  = extract_array_body(new_content, 'egress_policies')
                   existing = ""
-                  if os.path.exists(path):
-                      with open(path) as f:
+                  if os.path.exists(file_path):
+                      with open(file_path) as f:
                           existing = f.read()
                   updated = existing
                   if ingress_body:
-                      updated = append_to_array(updated, 'ingress_policies', ingress_body)
+                      updated = update_array(updated, 'ingress_policies', ingress_body)
                   if egress_body:
-                      updated = append_to_array(updated, 'egress_policies', egress_body)
-                  os.makedirs(os.path.dirname(path), exist_ok=True)
-                  with open(path, 'w') as f:
+                      updated = update_array(updated, 'egress_policies', egress_body)
+                  os.makedirs(os.path.dirname(file_path), exist_ok=True)
+                  with open(file_path, 'w') as f:
                       f.write(updated)
 
               subprocess.run(['git', '-C', repo_dir, 'config', 'user.email', 'bot@example.com'], check=True)
