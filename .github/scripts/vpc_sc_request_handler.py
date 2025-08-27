@@ -276,38 +276,11 @@ def build_actions(parsed: Dict[str, Any], router: Dict[str, Any]) -> List[Dict[s
         branch = f"vpcsc/{reqid.lower()}-{perim}"
         commit_msg = f"[VPC-SC] Apply request {reqid}"
         pr_title = f"VPC SC request {reqid} for {perim}"
-        pr_body = (
-            f"This pull request applies the VPC Service Controls request `{reqid}` to perimeter `{perim}`."
-            + ("\n\n\n**Justification:**\n" + justification if justification else "")
-        )
+        pr_body = f"This pull request applies the VPC Service Controls request `{reqid}` to perimeter `{perim}`."
 
         tfvars_lines: List[str] = []
-        if data["ingress_policies"]:
-            tfvars_lines.append("ingress_policies = [")
-            for pol in data["ingress_policies"]:
-                if justification:
-                    for line in justification.split("\n"):
-                        tfvars_lines.append("  # " + line)
-                hcl_pol = to_hcl(pol, indent=1)
-                tfvars_lines.extend(["  " + ln for ln in hcl_pol.split("\n")])
-                tfvars_lines[-1] += ","
-            tfvars_lines.append("]")
-        else:
-            tfvars_lines.append("ingress_policies = []")
-
-        if data["egress_policies"]:
-            tfvars_lines.append("egress_policies  = [")
-            for pol in data["egress_policies"]:
-                if justification:
-                    for line in justification.split("\n"):
-                        tfvars_lines.append("  # " + line)
-                hcl_pol = to_hcl(pol, indent=1)
-                tfvars_lines.extend(["  " + ln for ln in hcl_pol.split("\n")])
-                tfvars_lines[-1] += ","
-            tfvars_lines.append("]")
-        else:
-            tfvars_lines.append("egress_policies  = []")
-
+        tfvars_lines.append("ingress_policies = " + to_hcl(data["ingress_policies"], indent=0))
+        tfvars_lines.append("egress_policies  = " + to_hcl(data["egress_policies"], indent=0))
         tfvars_content = "\n".join(tfvars_lines) + "\n"
         access_content = "\n\n".join(data["access_levels"]) + ("\n" if data["access_levels"] else "")
         changes: List[Dict[str, Any]] = []
