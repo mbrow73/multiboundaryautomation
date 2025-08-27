@@ -1,28 +1,20 @@
-name: "Process VPC Service Controls Requests"
-
-# This workflow listens for issues created via the VPC Service Controls request template and
-# orchestrates updates to the appropriate perimeter repositories.  It parses the issue body,
-# generates or reuses access‑level modules when needed, updates the ingress/egress policies
-# in the target perimeter's terraform.auto.tfvars file, commits the changes on a branch and
-# opens a pull request.  The workflow posts a summary back to the original issue with
-# links to the created PRs.
+name: VPC Service Controls Request
 
 on:
   issues:
-    types: [opened]
-    # Only run when the issue has the vpc-sc-request label applied
+    types: [opened, edited]
 
 permissions:
   contents: write
-  issues: write
   pull-requests: write
+  issues: write
 
 jobs:
   process_vpc_sc_request:
-    if: contains(github.event.issue.labels.*.name, 'vpc-sc-request')
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout hub repository
+      - name: Check out this repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -32,105 +24,67 @@ jobs:
         with:
           python-version: '3.11'
 
+      # Write the issue body to a file so the handler can read it
       - name: Write issue body to file
-        id: write_body
         run: echo "${{ github.event.issue.body }}" > issue_body.md
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install pyyaml
+        run: python -m pip install --quiet pyyaml
 
-      - name: Process VPC SC request
-        id: process
-        env:
-          GITHUB_TOKEN: ${{ secrets.FIREWALL_API_TOKEN || secrets.GITHUB_TOKEN }}
+      # Configure Git so that any HTTPS URL to github.com automatically uses our PAT
+      - name: Configure git for cross‑repo pushes
         run: |
-          # The script reads issue_body.md, router.yml and writes out a JSON summary file
+          git config --global url."https://x-access-token:${{ secrets.CROSS_REPO_TOKEN }}@github.com/".insteadOf https://github.com/
+
+      - name: Run VPC SC request handler
+        id: handler
+        run: |
           python3 .github/scripts/vpc_sc_request_handler.py \
             --issue-file issue_body.md \
             --router-file router.yml \
-            --workdir ${{ github.workspace }}/tmp \
+            --workdir . \
             --output request_processing.json
 
-      - name: Read processing summary
-        id: summary
+      - name: Read actions output
+        id: read_actions
         run: |
-          if [ -f request_processing.json ]; then
-            cat request_processing.json
-          else
-            echo "{}" > request_processing.json
-          fi
+          python3 -c 'import json, sys; print(json.load(open("request_processing.json")).get("actions"))'
 
-      - name: Checkout perimeter repo and create PRs
-        id: create_prs
+      # If there are actions, fan out changes to each perimeter repo
+      - name: Apply changes and create PRs
+        if: steps.read_actions.outputs.stdout != '[]'
         env:
-          GITHUB_TOKEN: ${{ secrets.FIREWALL_API_TOKEN || secrets.GITHUB_TOKEN }}
+          CROSS_REPO_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
         run: |
           python3 - <<'PY'
-          import json, os, sys, subprocess, textwrap
-          import yaml
-
-          summary_path = 'request_processing.json'
-          if not os.path.exists(summary_path):
-            print('No summary found; nothing to do.')
-            sys.exit(0)
-          with open(summary_path) as f:
-            data = json.load(f)
-          if not data.get('actions'):
-            print('No actions to perform.')
-            sys.exit(0)
-
-          # For each action we will clone the repo, apply the changes, and create a PR
-          for action in data['actions']:
-            repo = action['repo']
-            branch = action['branch']
-            commit_message = action['commit_message']
-            pr_title = action['pr_title']
-            pr_body = action['pr_body']
-            changes = action['changes']
-
-            # Clone the repo
-            repo_dir = f"tmp/{repo.replace('/', '_')}"
-            subprocess.run(['git', 'clone', f'https://github.com/{repo}.git', repo_dir], check=True)
-
-            # Create and checkout branch
-            subprocess.run(['git', 'checkout', '-b', branch], cwd=repo_dir, check=True)
-
-            # Apply changes
-            for change in changes:
-              file_path = os.path.join(repo_dir, change['file'])
-              os.makedirs(os.path.dirname(file_path), exist_ok=True)
-              with open(file_path, 'w') as f:
-                f.write(change['content'])
-
-            # Commit and push
-            subprocess.run(['git', 'config', 'user.email', 'bot@example.com'], cwd=repo_dir, check=True)
-            subprocess.run(['git', 'config', 'user.name', 'VPC SC Bot'], cwd=repo_dir, check=True)
-            subprocess.run(['git', 'add', '.'], cwd=repo_dir, check=True)
-            subprocess.run(['git', 'commit', '-m', commit_message], cwd=repo_dir, check=True)
-            subprocess.run(['git', 'push', '--set-upstream', 'origin', branch], cwd=repo_dir, check=True)
-
-            # Create PR using GitHub CLI
-            subprocess.run([
-                'gh', 'pr', 'create',
-                '--repo', repo,
-                '--head', branch,
-                '--title', pr_title,
-                '--body', pr_body
-            ], check=True)
-
+          import json, os, subprocess, textwrap
+          data = json.load(open('request_processing.json'))
+          actions = data.get('actions', [])
+          for action in actions:
+              repo      = action['repo']
+              branch    = action['branch']
+              commit    = action['commit_message']
+              pr_title  = action['pr_title']
+              pr_body   = action['pr_body']
+              changes   = action['changes']
+              repo_dir  = f"tmp/{repo.replace('/', '_')}"
+              # Clone using the rewritten URL (the PAT is injected via the git config above)
+              subprocess.run(['git', 'clone', f'https://github.com/{repo}.git', repo_dir], check=True)
+              subprocess.run(['git', '-C', repo_dir, 'checkout', '-b', branch], check=True)
+              for change in changes:
+                  path = os.path.join(repo_dir, change['file'])
+                  os.makedirs(os.path.dirname(path), exist_ok=True)
+                  with open(path, 'w') as f:
+                      f.write(change['content'])
+              subprocess.run(['git', '-C', repo_dir, 'config', 'user.email', 'bot@example.com'], check=True)
+              subprocess.run(['git', '-C', repo_dir, 'config', 'user.name', 'VPC SC Bot'], check=True)
+              subprocess.run(['git', '-C', repo_dir, 'add', '.'], check=True)
+              subprocess.run(['git', '-C', repo_dir, 'commit', '-m', commit], check=True)
+              subprocess.run(['git', '-C', repo_dir, 'push', '--set-upstream', 'origin', branch], check=True)
+              subprocess.run(['gh', 'pr', 'create', '--repo', repo,
+                              '--head', branch, '--title', pr_title, '--body', pr_body], cwd=repo_dir, check=True)
           PY
 
       - name: Comment summary on the issue
-        if: always()
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          SUMMARY=$(cat request_processing.json || echo '{}')
-          echo "**VPC Service Controls request processed.**" > comment.md
-          echo >> comment.md
-          echo '```json' >> comment.md
-          echo "$SUMMARY" >> comment.md
-          echo '```' >> comment.md
-          gh issue comment ${{ github.event.issue.number }} --body-file comment.md
+          gh issue comment ${{ github.event.issue.number }} --body "**VPC Service Controls request processed.**```\n$(cat request_processing.json)\n```"
