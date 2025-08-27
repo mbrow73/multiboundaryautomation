@@ -10,7 +10,8 @@ Thank you for submitting a VPC Service Controls request. Use the sections below 
 Provide a unique request identifier (e.g., `REQ123456`).
 
 ### Perimeter Name
-Name of the VPC Service Controls perimeter to update (e.g., `test-perim-a`).
+Name(s) of the VPC Service Controls perimeter(s) to update.  If you need to target more than one perimeter, separate them with commas or list each on its own line. Example:
+test-perim-a, test-perim-b
 
 ### Rules
 Below is a template for one rule. Copy this entire block for each additional rule.
