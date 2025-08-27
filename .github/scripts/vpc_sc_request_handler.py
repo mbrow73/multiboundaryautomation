@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-# ... (same header comments)
+"""
+VPC Service Controls request handler.
+Parses a GitHub issue body into per-rule structures, normalises identities,
+and builds ingress/egress policy objects in HCL-ready form.
+"""
 
 import argparse
 import json
@@ -10,7 +14,7 @@ from typing import Any, Dict, List
 import yaml  # type: ignore
 
 def parse_issue_body(issue_text: str) -> Dict[str, Any]:
-    """Parse the issue body for VPC Service Controls request fields."""
+    # Same parse function as before…
     clean_text = re.sub(r"[\*`]+", "", issue_text)
     reqid_match = re.search(r"Request ID.*?:\s*([A-Za-z0-9_-]+)", clean_text, re.IGNORECASE)
     reqid = reqid_match.group(1).strip() if reqid_match else f"REQ-{uuid.uuid4().hex[:8]}"
@@ -24,7 +28,6 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
                 perimeters.append(perim)
     third_party_match = re.search(r"Third\s*-?Party\s*Name.*?:\s*(.+)", issue_text, re.IGNORECASE)
     third_party = third_party_match.group(1).strip() if third_party_match else ""
-    # Capture only the first non-empty line after "Justification"
     justification = ""
     just_match = re.search(r"Justification\s*\n+([^\n]+)", issue_text, re.IGNORECASE)
     if just_match:
@@ -37,14 +40,13 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
     )
     for rule_match in rule_pattern.finditer(clean_text):
         block = rule_match.group(0)
-        # Correctly pick the line below the heading to capture the direction
         dir_match = re.search(r"Direction[^\n]*\n\s*(INGRESS|EGRESS)", block, re.IGNORECASE)
         direction = dir_match.group(1).upper() if dir_match else ""
-
         headings = [
             "Perimeter Name", "Perimeter Name(s)", "Services", "Methods",
-            "Permissions", "Source / From", "From", "Destination / To", "To",
-            "Identities", "Direction", "Third-Party Name", "Third-Party Name (if applicable)", "Justification",
+            "Permissions", "Source / From", "From", "Destination / To",
+            "To", "Identities", "Direction", "Third-Party Name",
+            "Third-Party Name (if applicable)", "Justification",
         ]
         non_data_headings = {"Direction", "Third-Party Name", "Third-Party Name (if applicable)", "Justification"}
         values: Dict[str, List[str]] = {h: [] for h in headings if h not in non_data_headings}
@@ -60,8 +62,10 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
                     matched_heading = h
                     break
             if matched_heading:
-                if matched_heading.lower() in {"direction", "third-party name",
-                                               "third-party name (if applicable)", "justification"}:
+                if matched_heading.lower() in {"direction",
+                                               "third-party name",
+                                               "third-party name (if applicable)",
+                                               "justification"}:
                     current_heading = None
                 else:
                     current_heading = matched_heading
@@ -81,31 +85,19 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
         if not perim_vals:
             perim_vals = perimeters.copy()
 
-        services, methods, permissions = [], [], []
-        for val in values.get("Services", []):
-            for part in re.split(r",", val):
-                if part.strip():
-                    services.append(part.strip())
-        for val in values.get("Methods", []):
-            for part in re.split(r",", val):
-                if part.strip():
-                    methods.append(part.strip())
-        for val in values.get("Permissions", []):
-            for part in re.split(r",", val):
-                if part.strip():
-                    permissions.append(part.strip())
+        def split_values(key):
+            result: List[str] = []
+            for val in values.get(key, []):
+                for part in re.split(r",", val):
+                    if part.strip():
+                        result.append(part.strip())
+            return result
 
-        sources, destinations = [], []
-        for key in ("Source / From", "From"):
-            for val in values.get(key, []):
-                for part in re.split(r",", val):
-                    if part.strip():
-                        sources.append(part.strip())
-        for key in ("Destination / To", "To"):
-            for val in values.get(key, []):
-                for part in re.split(r",", val):
-                    if part.strip():
-                        destinations.append(part.strip())
+        services = split_values("Services")
+        methods  = split_values("Methods")
+        permissions = split_values("Permissions")
+        sources  = split_values("Source / From") + split_values("From")
+        destinations = split_values("Destination / To") + split_values("To")
 
         identities: List[str] = []
         for val in values.get("Identities", []):
@@ -142,5 +134,206 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
         "rules": rules,
     }
 
-# build_actions() remains the same except for justification handling and per-rule comments,
-# which you have already incorporated.
+def build_actions(parsed: Dict[str, Any], router: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Construct actions based on the parsed request and router mapping."""
+    actions: List[Dict[str, Any]] = []
+    reqid = parsed.get("reqid") or f"REQ-{uuid.uuid4().hex[:8]}"
+    justification = parsed.get("justification") or ""
+    rules: List[Dict[str, Any]] = parsed.get("rules", [])
+
+    # Aggregate policies per perimeter
+    perim_map: Dict[str, Dict[str, Any]] = {}
+    def safe_name(s: str) -> str:
+        return re.sub(r"[^A-Za-z0-9]", "-", s.lower())
+
+    for idx, rule in enumerate(rules):
+        direction = rule.get("direction", "").upper()
+        services  = rule.get("services", [])
+        methods   = rule.get("methods", [])
+        permissions = rule.get("permissions", [])
+        sources   = rule.get("sources", [])
+        destinations = rule.get("destinations", [])
+        identities  = rule.get("identities", [])
+        rule_perims: List[str] = rule.get("perimeters", []) or parsed.get("perimeters", [])
+
+        # Build operations dictionary keyed by service
+        operations: Dict[str, Dict[str, Any]] = {}
+        for svc in services:
+            operations[svc] = {
+                "methods": methods.copy() if methods else [],
+                "permissions": permissions.copy() if permissions else [],
+            }
+
+        for perim in rule_perims:
+            perim_info = router.get("perimeters", {}).get(perim)
+            if not perim_info:
+                continue
+            data = perim_map.setdefault(perim, {"ingress_policies": [], "egress_policies": [], "access_levels": []})
+            policy_id = perim_info.get("policy_id")
+
+            if direction == "INGRESS":
+                ingress_from: Dict[str, Any] = {"identity_type": ""}
+                access_levels_list: List[str] = []
+                resource_sources: List[str] = []
+                ip_subnets: List[str] = []
+                for src in sources:
+                    if re.match(r"^\d+\.\d+\.\d+\.\d+(\/\d+)?$", src):
+                        ip_subnets.append(src)
+                    else:
+                        resource_sources.append(src)
+                if ip_subnets:
+                    level_name = f"{safe_name(reqid)}-rule{idx+1}"
+                    access_uri = f"accessPolicies/{policy_id}/accessLevels/{level_name}"
+                    access_levels_list.append(access_uri)
+                    hcl_lines = [
+                        f"resource \"google_access_context_manager_access_level\" \"{level_name}\" {{",
+                        f"  name   = \"accessPolicies/{policy_id}/accessLevels/{level_name}\"",
+                        f"  parent = \"accessPolicies/{policy_id}\"",
+                        f"  title  = \"{level_name}\"",
+                        "  basic {",
+                        "    conditions {",
+                        f"      ip_subnetworks = [" + ", ".join([f'\"{ip}\"' for ip in ip_subnets]) + "]",
+                        (f"      members        = [" + ", ".join([f'\"{m}\"' for m in identities]) + "]" if identities else ""),
+                        "    }",
+                        "  }",
+                        "}\n",
+                    ]
+                    data["access_levels"].append("\n".join([line for line in hcl_lines if line]))
+                ingress_from["sources"] = {"resources": resource_sources, "access_levels": access_levels_list}
+                if identities:
+                    ingress_from["identities"] = identities
+                ingress_to: Dict[str, Any] = {}
+                if destinations:
+                    ingress_to["resources"] = destinations
+                if operations:
+                    ingress_to["operations"] = operations
+                data["ingress_policies"].append({"from": ingress_from, "to": ingress_to})
+
+            elif direction == "EGRESS":
+                egress_from: Dict[str, Any] = {"identity_type": ""}
+                if identities:
+                    egress_from["identities"] = identities
+                egress_to: Dict[str, Any] = {}
+                if destinations:
+                    egress_to["resources"] = destinations
+                if operations:
+                    egress_to["operations"] = operations
+                data["egress_policies"].append({"from": egress_from, "to": egress_to})
+
+    def to_hcl(value: Any, indent: int = 0) -> str:
+        indent_str = "  " * indent
+        if isinstance(value, str):
+            return f'"{value}"'
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if value is None:
+            return "null"
+        if isinstance(value, (int, float)):
+            return str(value)
+        if isinstance(value, list):
+            if not value:
+                return "[]"
+            if all(not isinstance(v, (dict, list)) for v in value):
+                return "[" + ", ".join(to_hcl(v, indent) for v in value) + "]"
+            lines = ["["]
+            for item in value:
+                lines.append(("  " * (indent + 1)) + to_hcl(item, indent + 1) + ",")
+            lines.append(indent_str + "]")
+            return "\n".join(lines)
+        if isinstance(value, dict):
+            if not value:
+                return "{}"
+            lines = ["{"]
+            for key, val in value.items():
+                key_repr = f'"{key}"' if re.search(r"[^A-Za-z0-9_]", key) else key
+                lines.append(("  " * (indent + 1)) + f"{key_repr} = {to_hcl(val, indent + 1)}")
+            lines.append(indent_str + "}")
+            return "\n".join(lines)
+        return json.dumps(value)
+
+    for perim, data in perim_map.items():
+        perim_info = router.get("perimeters", {}).get(perim)
+        if not perim_info:
+            continue
+        repo = perim_info.get("repo")
+        tfvars_file = perim_info.get("tfvars_file")
+        access_file = perim_info.get("accesslevel_file")
+        branch = f"vpcsc/{reqid.lower()}-{perim}"
+        commit_msg = f"[VPC-SC] Apply request {reqid}"
+        pr_title   = f"VPC SC request {reqid} for {perim}"
+        pr_body    = (
+            f"This pull request applies the VPC Service Controls request `{reqid}` to perimeter `{perim}`."
+            + ("\n\n\n**Justification:**\n" + justification if justification else "")
+        )
+
+        # Create tfvars content by appending justification before each new rule
+        tfvars_lines: List[str] = []
+        if data["ingress_policies"]:
+            tfvars_lines.append("ingress_policies = [")
+            for pol in data["ingress_policies"]:
+                if justification:
+                    for line in justification.split("\n"):
+                        tfvars_lines.append("  # " + line)
+                hcl_pol = to_hcl(pol, indent=1)
+                tfvars_lines.extend(["  " + ln for ln in hcl_pol.split("\n")])
+                tfvars_lines[-1] += ","
+            tfvars_lines.append("]")
+        else:
+            tfvars_lines.append("ingress_policies = []")
+
+        if data["egress_policies"]:
+            tfvars_lines.append("egress_policies  = [")
+            for pol in data["egress_policies"]:
+                if justification:
+                    for line in justification.split("\n"):
+                        tfvars_lines.append("  # " + line)
+                hcl_pol = to_hcl(pol, indent=1)
+                tfvars_lines.extend(["  " + ln for ln in hcl_pol.split("\n")])
+                tfvars_lines[-1] += ","
+            tfvars_lines.append("]")
+        else:
+            tfvars_lines.append("egress_policies  = []")
+        tfvars_content = "\n".join(tfvars_lines) + "\n"
+
+        access_content = "\n\n".join(data["access_levels"]) + ("\n" if data["access_levels"] else "")
+        changes: List[Dict[str, Any]] = []
+        if tfvars_file:
+            changes.append({"file": tfvars_file, "content": tfvars_content})
+        if access_file and access_content:
+            changes.append({"file": access_file, "content": access_content})
+
+        actions.append({
+            "repo": repo,
+            "branch": branch,
+            "commit_message": commit_msg,
+            "pr_title": pr_title,
+            "pr_body": pr_body,
+            "changes": changes,
+        })
+    return actions
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Process a VPC Service Controls request issue")
+    parser.add_argument("--issue-file", required=True, help="Path to the issue body file (markdown)")
+    parser.add_argument("--router-file", required=True, help="Path to router.yml mapping perimeters to repos")
+    parser.add_argument("--workdir", required=False, default=".", help="Working directory (unused)")
+    parser.add_argument("--output", required=True, help="Path to write the JSON summary")
+    args = parser.parse_args()
+
+    with open(args.issue_file, "r", encoding="utf-8") as f:
+        issue_text = f.read()
+    try:
+        with open(args.router_file, "r", encoding="utf-8") as f:
+            router = yaml.safe_load(f)
+    except Exception:
+        router = {}
+
+    parsed = parse_issue_body(issue_text)
+    actions = build_actions(parsed, router)
+    summary = {"reqid": parsed.get("reqid"), "actions": actions}
+    with open(args.output, "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2)
+    print(json.dumps(summary, indent=2))
+
+if __name__ == "__main__":
+    main()
