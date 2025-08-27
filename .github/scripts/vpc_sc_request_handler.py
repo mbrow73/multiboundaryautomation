@@ -10,12 +10,10 @@ from typing import Any, Dict, List
 import yaml  # type: ignore
 
 def parse_issue_body(issue_text: str) -> Dict[str, Any]:
-    # Remove markdown formatting from headings
+    """Parse the issue body for VPC Service Controls request fields."""
     clean_text = re.sub(r"[\*`]+", "", issue_text)
-
     reqid_match = re.search(r"Request ID.*?:\s*([A-Za-z0-9_-]+)", clean_text, re.IGNORECASE)
     reqid = reqid_match.group(1).strip() if reqid_match else f"REQ-{uuid.uuid4().hex[:8]}"
-
     perimeters: List[str] = []
     match_global_perimeter = re.search(r"^Perimeter Name\s*:?(.*)$", clean_text, re.IGNORECASE | re.MULTILINE)
     if match_global_perimeter:
@@ -24,11 +22,9 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
             perim = part.strip()
             if perim and perim != "(s)":
                 perimeters.append(perim)
-
     third_party_match = re.search(r"Third\s*-?Party\s*Name.*?:\s*(.+)", issue_text, re.IGNORECASE)
     third_party = third_party_match.group(1).strip() if third_party_match else ""
-
-    # Capture only the first line after "Justification"
+    # Capture only the first non-empty line after "Justification"
     justification = ""
     just_match = re.search(r"Justification\s*\n+([^\n]+)", issue_text, re.IGNORECASE)
     if just_match:
@@ -41,20 +37,16 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
     )
     for rule_match in rule_pattern.finditer(clean_text):
         block = rule_match.group(0)
-
-        # Direction is the line immediately after the "Direction" heading
+        # Correctly pick the line below the heading to capture the direction
         dir_match = re.search(r"Direction[^\n]*\n\s*(INGRESS|EGRESS)", block, re.IGNORECASE)
         direction = dir_match.group(1).upper() if dir_match else ""
 
-        # Gather fields as before...
         headings = [
             "Perimeter Name", "Perimeter Name(s)", "Services", "Methods",
-            "Permissions", "Source / From", "From", "Destination / To",
-            "To", "Identities", "Direction", "Third-Party Name",
-            "Third-Party Name (if applicable)", "Justification",
+            "Permissions", "Source / From", "From", "Destination / To", "To",
+            "Identities", "Direction", "Third-Party Name", "Third-Party Name (if applicable)", "Justification",
         ]
-        non_data_headings = {"Direction", "Third-Party Name",
-                             "Third-Party Name (if applicable)", "Justification"}
+        non_data_headings = {"Direction", "Third-Party Name", "Third-Party Name (if applicable)", "Justification"}
         values: Dict[str, List[str]] = {h: [] for h in headings if h not in non_data_headings}
         current_heading: str | None = None
         for line in block.splitlines():
@@ -68,10 +60,8 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
                     matched_heading = h
                     break
             if matched_heading:
-                if matched_heading.lower() in {"direction",
-                                               "third-party name",
-                                               "third-party name (if applicable)",
-                                               "justification"}:
+                if matched_heading.lower() in {"direction", "third-party name",
+                                               "third-party name (if applicable)", "justification"}:
                     current_heading = None
                 else:
                     current_heading = matched_heading
@@ -152,4 +142,5 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
         "rules": rules,
     }
 
-# ... rest of the build_actions() and main() functions remain the same ...
+# build_actions() remains the same except for justification handling and per-rule comments,
+# which you have already incorporated.
