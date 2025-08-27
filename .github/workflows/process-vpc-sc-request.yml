@@ -24,20 +24,19 @@ jobs:
         with:
           python-version: '3.11'
 
-      # Write the issue body to a file so the handler can read it
       - name: Write issue body to file
-        run: echo "${{ github.event.issue.body }}" > issue_body.md
+        run: |
+          echo "${{ github.event.issue.body }}" > issue_body.md
 
-      - name: Install dependencies
+      - name: Install Python dependencies
         run: python -m pip install --quiet pyyaml
 
-      # Configure Git so that any HTTPS URL to github.com automatically uses our PAT
+      # Configure Git so any GitHub URL uses the PAT stored in CROSS_REPO_TOKEN
       - name: Configure git for cross‑repo pushes
         run: |
           git config --global url."https://x-access-token:${{ secrets.CROSS_REPO_TOKEN }}@github.com/".insteadOf https://github.com/
 
       - name: Run VPC SC request handler
-        id: handler
         run: |
           python3 .github/scripts/vpc_sc_request_handler.py \
             --issue-file issue_body.md \
@@ -45,30 +44,32 @@ jobs:
             --workdir . \
             --output request_processing.json
 
-      - name: Read actions output
+      # Parse the summary file to extract the actions list; save it in stdout for the next step
+      - name: Read actions from summary
         id: read_actions
         run: |
-          python3 -c 'import json, sys; print(json.load(open("request_processing.json")).get("actions"))'
+          python3 -c "import json, sys; data=json.load(open('request_processing.json')); print(data.get('actions', []))"
 
-      # If there are actions, fan out changes to each perimeter repo
+      # If there are actions, clone target repos, commit changes, push, and open PRs
       - name: Apply changes and create PRs
         if: steps.read_actions.outputs.stdout != '[]'
         env:
           CROSS_REPO_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
+          GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
         run: |
           python3 - <<'PY'
-          import json, os, subprocess, textwrap
+          import json, os, subprocess
           data = json.load(open('request_processing.json'))
           actions = data.get('actions', [])
           for action in actions:
-              repo      = action['repo']
-              branch    = action['branch']
-              commit    = action['commit_message']
-              pr_title  = action['pr_title']
-              pr_body   = action['pr_body']
-              changes   = action['changes']
-              repo_dir  = f"tmp/{repo.replace('/', '_')}"
-              # Clone using the rewritten URL (the PAT is injected via the git config above)
+              repo     = action['repo']
+              branch   = action['branch']
+              commit   = action['commit_message']
+              pr_title = action['pr_title']
+              pr_body  = action['pr_body']
+              changes  = action['changes']
+              repo_dir = f"tmp/{repo.replace('/', '_')}"
+              # Clone target repository with auth (git config already rewrites URL)
               subprocess.run(['git', 'clone', f'https://github.com/{repo}.git', repo_dir], check=True)
               subprocess.run(['git', '-C', repo_dir, 'checkout', '-b', branch], check=True)
               for change in changes:
@@ -81,10 +82,16 @@ jobs:
               subprocess.run(['git', '-C', repo_dir, 'add', '.'], check=True)
               subprocess.run(['git', '-C', repo_dir, 'commit', '-m', commit], check=True)
               subprocess.run(['git', '-C', repo_dir, 'push', '--set-upstream', 'origin', branch], check=True)
-              subprocess.run(['gh', 'pr', 'create', '--repo', repo,
-                              '--head', branch, '--title', pr_title, '--body', pr_body], cwd=repo_dir, check=True)
+              # Create a pull request using GitHub CLI
+              subprocess.run(['gh', 'pr', 'create',
+                              '--repo', repo,
+                              '--head', branch,
+                              '--title', pr_title,
+                              '--body', pr_body],
+                             cwd=repo_dir,
+                             check=True)
           PY
 
-      - name: Comment summary on the issue
+      - name: Comment on the issue with summary
         run: |
-          gh issue comment ${{ github.event.issue.number }} --body "**VPC Service Controls request processed.**```\n$(cat request_processing.json)\n```"
+          gh issue comment ${{ github.event.issue.number }} --body "**VPC Service Controls request processed.**\n\`\`\`json\n$(cat request_processing.json)\n\`\`\`"
