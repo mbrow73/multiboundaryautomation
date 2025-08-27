@@ -25,13 +25,11 @@ jobs:
           python-version: '3.11'
 
       - name: Write issue body to file
-        run: |
-          echo "${{ github.event.issue.body }}" > issue_body.md
+        run: echo "${{ github.event.issue.body }}" > issue_body.md
 
-      - name: Install Python dependencies
+      - name: Install dependencies
         run: python -m pip install --quiet pyyaml
 
-      # Configure Git to use your PAT for any github.com URL
       - name: Configure git for cross‑repo pushes
         run: |
           git config --global url."https://x-access-token:${{ secrets.CROSS_REPO_TOKEN }}@github.com/".insteadOf https://github.com/
@@ -47,7 +45,10 @@ jobs:
       - name: Read actions from summary
         id: read_actions
         run: |
-          python3 -c "import json; print(json.load(open('request_processing.json')).get('actions', []))"
+          if [ -f request_processing.json ]; then
+            python3 -c "import json; print(json.load(open('request_processing.json')).get('actions', []))"
+          else
+            echo "[]"
 
       - name: Apply changes and create PRs
         if: steps.read_actions.outputs.stdout != '[]'
@@ -56,7 +57,45 @@ jobs:
           GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
         run: |
           python3 - <<'PY'
-          import json, os, subprocess
+          import json, os, re, subprocess
+          def append_policies(existing_tfvars, new_ingress, new_egress, justification):
+              # Append new ingress policies
+              def merge_array(content, array_name, new_items):
+                  # Look for array_name = [ ... ] in the file; append items before the closing bracket
+                  pattern = re.compile(rf'({array_name}\\s*=\\s*\\[)(.*?)(\\])', re.DOTALL)
+                  m = pattern.search(content)
+                  if not m:
+                      # If not found, create the array
+                      return content + f"\n{array_name} = [\n" + ",\n".join(new_items) + "\n]\n"
+                  before, body, after = m.groups()
+                  body = body.rstrip()
+                  if body:
+                      body += ",\n" + ",\n".join(new_items)
+                  else:
+                      body = "\n" + ",\n".join(new_items)
+                  return content[:m.start()] + before + body + after + content[m.end():]
+
+              content = existing_tfvars
+              if new_ingress:
+                  # Prepend justification as comments above each new ingress item
+                  new_ing = []
+                  for hcl in new_ingress:
+                      if justification:
+                          for line in justification.split("\n"):
+                              new_ing.append(f"  # {line}")
+                      new_ing.extend(["  " + ln for ln in hcl.split("\n")])
+                  content = merge_array(content, "ingress_policies", [ "\n".join(new_ing) ])
+
+              if new_egress:
+                  new_eg = []
+                  for hcl in new_egress:
+                      if justification:
+                          for line in justification.split("\n"):
+                              new_eg.append(f"  # {line}")
+                      new_eg.extend(["  " + ln for ln in hcl.split("\n")])
+                  content = merge_array(content, "egress_policies", [ "\n".join(new_eg) ])
+              return content
+
           data = json.load(open('request_processing.json'))
           for action in data.get('actions', []):
               repo      = action['repo']
@@ -68,27 +107,38 @@ jobs:
               repo_dir  = f"tmp/{repo.replace('/', '_')}"
               subprocess.run(['git', 'clone', f'https://github.com/{repo}.git', repo_dir], check=True)
               subprocess.run(['git', '-C', repo_dir, 'checkout', '-b', branch], check=True)
+
               for change in changes:
                   path = os.path.join(repo_dir, change['file'])
-                  os.makedirs(os.path.dirname(path), exist_ok=True)
+                  # Collect new ingress/egress HCL blocks from the change
+                  new_content = change['content']
+                  new_ing = re.findall(r'\\{\n.*?\\}', new_content, re.DOTALL)
+                  new_eg = re.findall(r'\\{\n.*?\\}', new_content, re.DOTALL)
+                  # Read existing file if it exists
+                  existing = ""
+                  if os.path.exists(path):
+                      with open(path, 'r') as f:
+                          existing = f.read()
+                  updated = append_policies(existing, new_ing if "ingress_policies" in new_content else [],
+                                            new_eg if "egress_policies" in new_content else [],
+                                            "")  # justification already in HCL
                   with open(path, 'w') as f:
-                      f.write(change['content'])
+                      f.write(updated)
+
               subprocess.run(['git', '-C', repo_dir, 'config', 'user.email', 'bot@example.com'], check=True)
               subprocess.run(['git', '-C', repo_dir, 'config', 'user.name', 'VPC SC Bot'], check=True)
               subprocess.run(['git', '-C', repo_dir, 'add', '.'], check=True)
               subprocess.run(['git', '-C', repo_dir, 'commit', '-m', commit], check=True)
               subprocess.run(['git', '-C', repo_dir, 'push', '--set-upstream', 'origin', branch], check=True)
-              subprocess.run(['gh', 'pr', 'create',
-                              '--repo', repo,
-                              '--head', branch,
-                              '--title', pr_title,
-                              '--body', pr_body],
-                             cwd=repo_dir,
-                             check=True)
+              subprocess.run(['gh', 'pr', 'create', '--repo', repo, '--head', branch,
+                              '--title', pr_title, '--body', pr_body], cwd=repo_dir, check=True)
           PY
 
       - name: Comment on the issue with summary
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh issue comment ${{ github.event.issue.number }} --body "$(printf '**VPC Service Controls request processed.**\n```json\n%s\n```' "$(cat request_processing.json)")"
+          if [ -f request_processing.json ]; then
+            gh issue comment ${{ github.event.issue.number }} --body "$(printf '**VPC Service Controls request processed.**\n```json\n%s\n```' "$(cat request_processing.json)")"
+          else
+            gh issue comment ${{ github.event.issue.number }} --body "Error: request_processing.json was not generated."
