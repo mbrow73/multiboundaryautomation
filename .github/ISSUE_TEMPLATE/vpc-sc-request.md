@@ -14,7 +14,7 @@ Below is a template for one rule. Copy this entire block for each additional rul
 
 **Perimeter Name(s)**  
 Specify the perimeter or perimeters this rule applies to. Separate multiple perimeters with commas or list each on its own line. Example:  
-`test-perim-a, test-perim-b`
+`test-perim-a`
 
 **Direction (INGRESS or EGRESS)**  
 Specify whether this rule is for **INGRESS** (allowing traffic into the perimeter) or **EGRESS** (allowing traffic out of the perimeter).
@@ -33,13 +33,13 @@ List specific IAM permissions that apply to all services in this rule (comma‑s
 
 **From**  
 List the sources and/or identities for this rule.  
-- For **ingress** rules, this is where the traffic originates (e.g., IP ranges like `192.0.2.0/24`, VPC networks, or other resources).  
-- For **egress** rules, this is usually left blank (traffic originates from inside the perimeter), but you can specify identities if you need to restrict which principals can initiate the egress.
+- For **ingress** rules, this is where the traffic originates (e.g., IP ranges like `132.1.2.3/32`, or ( `*` for all projects or `projects/my-project-number`))
+projects/
 
 **To**  
 List the target resources for this rule.  
-- For **ingress** rules, specify the internal projects or resources being accessed (e.g., `*` for all projects or `projects/my-project`).  
-- For **egress** rules, specify the external projects or services being accessed.
+- For **ingress** rules, specify the internal projects or resources being accessed (e.g., `*` for all projects or `projects/my-project-number`).  
+- For **egress** rules, specify the external projects being accessed. (e.g., `*` for all projects or `projects/my-project-number`).
 
 **Identities**  
 List the identities (e.g., `user:email@example.com`, `serviceAccount:sa@example.iam.gserviceaccount.com`) that are allowed to use this rule. If left blank, the rule applies to all identities.
