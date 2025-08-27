@@ -58,8 +58,7 @@ jobs:
           python3 - <<'PY'
           import json, os, subprocess
           data = json.load(open('request_processing.json'))
-          actions = data.get('actions', [])
-          for action in actions:
+          for action in data.get('actions', []):
               repo      = action['repo']
               branch    = action['branch']
               commit    = action['commit_message']
@@ -92,4 +91,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh issue comment ${{ github.event.issue.number }} --body "**VPC Service Controls request processed.**\n\`\`\`json\n$(cat request_processing.json)\n\`\`\`"
+          gh issue comment ${{ github.event.issue.number }} --body "$(printf '**VPC Service Controls request processed.**\n```json\n%s\n```' "$(cat request_processing.json)")"
