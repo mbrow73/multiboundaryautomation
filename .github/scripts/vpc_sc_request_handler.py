@@ -15,6 +15,17 @@ import yaml  # type: ignore
 
 
 def parse_issue_body(issue_text: str) -> Dict[str, Any]:
+    """
+    Parse the markdown issue text into a structured dictionary:
+      - reqid: request ID
+      - perimeters: global perimeters (deprecated but retained)
+      - third_party: any third-party name
+      - justification: top-level justification
+      - rules: list of rule dicts (direction, services, methods, permissions,
+               sources, destinations, identities, perimeters).
+    Handles multiple rules, normalises identity prefixes, and skips any
+    variant of “Third-Party Name” heading.
+    """
     clean_text = re.sub(r"[\*`]+", "", issue_text)
     reqid_match = re.search(r"Request ID.*?:\s*([A-Za-z0-9_-]+)", clean_text, re.IGNORECASE)
     reqid = reqid_match.group(1).strip() if reqid_match else f"REQ-{uuid.uuid4().hex[:8]}"
@@ -36,7 +47,6 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
             justification = candidate
 
     rules: List[Dict[str, Any]] = []
-
     rule_pattern = re.compile(
         r"Perimeter Name\(s\)?[^\n]*\n.*?(?=(?:\n\s*Perimeter Name\(s\)?|\Z))",
         re.IGNORECASE | re.DOTALL,
@@ -59,7 +69,7 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
             stripped = line.strip()
             if not stripped:
                 continue
-            # Remove formatting and normalise hyphens
+            # Normalise markdown markers and hyphens
             normalized = re.sub(r"[*`#]+", "", stripped)
             normalized = (normalized
                           .replace("\u2011", "-")
@@ -70,16 +80,16 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
             matched_heading = None
             for h in headings:
                 h_norm = (h.replace("\u2011", "-")
-                            .replace("\u2012", "-")
-                            .replace("\u2013", "-")
-                            .replace("\u2014", "-"))
+                          .replace("\u2012", "-")
+                          .replace("\u2013", "-")
+                          .replace("\u2014", "-"))
                 if re.match(rf"^{re.escape(h_norm)}", normalized, re.IGNORECASE):
                     matched_heading = h
                     break
             if matched_heading:
-                if matched_heading.lower().replace("–", "-").startswith("direction") \
-                   or "third-party" in matched_heading.lower() \
-                   or matched_heading.lower() == "justification":
+                key = matched_heading.lower().replace("\u2011", "-").replace("\u2012", "-") \
+                                              .replace("\u2013", "-").replace("\u2014", "-")
+                if key.startswith("direction") or "third-party" in key or key == "justification":
                     current_heading = None
                 else:
                     current_heading = matched_heading
