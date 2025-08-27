@@ -13,8 +13,8 @@ Provide a unique request identifier (e.g., `REQ123456`).
 Below is a template for one rule. Copy this entire block for each additional rule.
 
 **Perimeter Name(s)**  
-Specify the perimeter or perimeters this rule applies to. Separate multiple perimeters with commas or list each on its own line. Example:  
-`test-perim-a, test-perim-b`
+Specify the perimeter
+`test-perim-a`
 
 **Direction (INGRESS or EGRESS)**  
 Specify whether this rule is for **INGRESS** (allowing traffic into the perimeter) or **EGRESS** (allowing traffic out of the perimeter).
