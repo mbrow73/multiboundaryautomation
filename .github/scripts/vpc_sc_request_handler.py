@@ -46,20 +46,24 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
       - rules: a list of rule dictionaries with keys direction, services,
         methods, sources, destinations and identities
     """
+    # Preprocess to remove markdown bold/italic/backticks that may interfere with regex.
+    clean_text = re.sub(r"[\*`]+", "", issue_text)
+
     # Generate or extract request id
-    reqid_match = re.search(r"Request ID.*?:\s*([A-Za-z0-9_-]+)", issue_text, re.IGNORECASE)
+    reqid_match = re.search(r"Request ID.*?:\s*([A-Za-z0-9_-]+)", clean_text, re.IGNORECASE)
     reqid = reqid_match.group(1).strip() if reqid_match else f"REQ-{uuid.uuid4().hex[:8]}"
 
     # Top‑level perimeter names are deprecated in favour of per-rule perimeters.
     # Extract any global perimeter names for backward compatibility.
     perimeters: List[str] = []
     perimeter_regex = re.compile(r"^Perimeter Name\s*:?(.*)$", re.IGNORECASE | re.MULTILINE)
-    match_global_perimeter = perimeter_regex.search(issue_text)
+    match_global_perimeter = perimeter_regex.search(clean_text)
     if match_global_perimeter:
         value = match_global_perimeter.group(1).strip()
         for part in re.split(r",", value):
             perim = part.strip()
-            if perim:
+            # Skip spurious values like "(s)" that arise from optional plural markers
+            if perim and perim != "(s)":
                 perimeters.append(perim)
 
     # TTL is no longer used.  Leave as empty string for backward compatibility.
@@ -75,91 +79,129 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
     if justification_match:
         justification = justification_match.group(1).strip()
 
-    # Parse rules.  Split on Direction headings
+    # Parse rules using a more robust line‑based approach.  Each rule starts
+    # at a "Perimeter Name" heading and continues until the next such heading
+    # (or end of file).  If the template omits the perimeter for a rule, it
+    # will fall back to any global perimeters parsed earlier.
     rules: List[Dict[str, Any]] = []
-    pattern = re.compile(
-        r"Direction\s*\([^\)]+\)\s*\n(.*?)(?=\n\s*Direction\s*\(|\Z)",
+    # Regular expression to find rule blocks starting at "Perimeter Name"
+    rule_pattern = re.compile(
+        r"Perimeter Name\(s\)?[^\n]*\n.*?(?=(?:\n\s*Perimeter Name\(s\)?|\Z))",
         re.IGNORECASE | re.DOTALL,
     )
-    for rule_match in pattern.finditer(issue_text):
-        rule_text = rule_match.group(0)
-        # Determine direction (INGRESS or EGRESS)
-        dir_match = re.search(r"Direction.*?(INGRESS|EGRESS)", rule_text, re.IGNORECASE)
+    for rule_match in rule_pattern.finditer(clean_text):
+        block = rule_match.group(0)
+        # Determine direction
+        dir_match = re.search(r"Direction.*?(INGRESS|EGRESS)", block, re.IGNORECASE)
         direction = dir_match.group(1).upper() if dir_match else ""
-
-        # Helper to extract a section between a heading and the next blank line
-        def extract_section(label: str, text: str) -> str:
-            sec_match = re.search(
-                rf"{label}\s*\n(.*?)(?:\n\s*\n|\Z)", text, re.IGNORECASE | re.DOTALL
-            )
-            return sec_match.group(1).strip() if sec_match else ""
-
-        # Perimeter names for this rule (comma or newline separated).  If
-        # unspecified, fall back to top‑level perimeters.
-        perim_raw = extract_section("Perimeter Name", rule_text)
-        perim_names: List[str] = []
-        for part in re.split(r"[,\n]+", perim_raw):
-            name = part.strip()
-            if name:
-                perim_names.append(name)
-        if not perim_names:
-            perim_names = perimeters.copy()
-
-        services_raw = extract_section("Services", rule_text)
+        # Candidate headings within a rule
+        headings = [
+            "Perimeter Name",
+            "Perimeter Name(s)",
+            "Services",
+            "Methods",
+            "Permissions",
+            "Source / From",
+            "From",
+            "Destination / To",
+            "To",
+            "Identities",
+            # Include Direction as a heading to prevent it from being captured as a value
+            "Direction",
+        ]
+        # Initialise values for headings we intend to capture (exclude Direction)
+        values: Dict[str, List[str]] = {h: [] for h in headings if h != "Direction"}
+        current_heading: str | None = None
+        for line in block.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            normalized = re.sub(r"[*`]+", "", stripped)
+            matched_heading = None
+            for h in headings:
+                if re.match(rf"^{re.escape(h)}", normalized, re.IGNORECASE):
+                    matched_heading = h
+                    break
+            if matched_heading:
+                # If this is the Direction heading, do not set current_heading
+                # so that the following line (e.g., "INGRESS") is not captured as a value.
+                if matched_heading.lower().startswith("direction"):
+                    current_heading = None
+                else:
+                    current_heading = matched_heading
+                continue
+            # Stop capturing when encountering Third‑Party or Justification headings
+            if re.match(r"^Third", normalized, re.IGNORECASE) or re.match(r"^Justification", normalized, re.IGNORECASE):
+                current_heading = None
+                continue
+            if current_heading:
+                if stripped.startswith("-") or re.search(r"\bFor\b|\bExample\b", stripped, re.IGNORECASE):
+                    continue
+                values[current_heading].append(stripped)
+        # Extract perimeters
+        perim_vals: List[str] = []
+        for key in ("Perimeter Name(s)", "Perimeter Name"):
+            for val in values.get(key, []):
+                for part in re.split(r",", val):
+                    part = part.strip()
+                    if part:
+                        perim_vals.append(part)
+        if not perim_vals:
+            perim_vals = perimeters.copy()
+        # Extract services
         services: List[str] = []
-        for s in re.split(r"[,\n]+", services_raw):
-            s = s.strip()
-            if s:
-                services.append(s)
-
-        methods_raw = extract_section("Methods", rule_text)
+        for val in values.get("Services", []):
+            for part in re.split(r",", val):
+                part = part.strip()
+                if part:
+                    services.append(part)
+        # Extract methods
         methods: List[str] = []
-        for m in re.split(r"[,\n]+", methods_raw):
-            m = m.strip()
-            if m:
-                methods.append(m)
-
-        # Permissions (optional)
-        permissions_raw = extract_section("Permissions", rule_text)
+        for val in values.get("Methods", []):
+            for part in re.split(r",", val):
+                part = part.strip()
+                if part:
+                    methods.append(part)
+        # Extract permissions
         permissions: List[str] = []
-        for p in re.split(r"[,\n]+", permissions_raw):
-            p = p.strip()
-            if p:
-                permissions.append(p)
-
-        sources_raw = extract_section("Source / From", rule_text)
+        for val in values.get("Permissions", []):
+            for part in re.split(r",", val):
+                part = part.strip()
+                if part:
+                    permissions.append(part)
+        # Extract sources
         sources: List[str] = []
-        for src in re.split(r"[,\n]+", sources_raw):
-            src = src.strip()
-            if src:
-                sources.append(src)
-
-        destinations_raw = extract_section("Destination / To", rule_text)
+        for key in ("Source / From", "From"):
+            for val in values.get(key, []):
+                for part in re.split(r",", val):
+                    part = part.strip()
+                    if part:
+                        sources.append(part)
+        # Extract destinations
         destinations: List[str] = []
-        for dst in re.split(r"[,\n]+", destinations_raw):
-            dst = dst.strip()
-            if dst:
-                destinations.append(dst)
-
-        identities_raw = extract_section("Identities", rule_text)
+        for key in ("Destination / To", "To"):
+            for val in values.get(key, []):
+                for part in re.split(r",", val):
+                    part = part.strip()
+                    if part:
+                        destinations.append(part)
+        # Extract identities
         identities: List[str] = []
-        for idn in re.split(r"[,\n]+", identities_raw):
-            idn = idn.strip()
-            if idn:
-                identities.append(idn)
-
-        rules.append(
-            {
-                "direction": direction,
-                "services": services,
-                "methods": methods,
-                "permissions": permissions,
-                "sources": sources,
-                "destinations": destinations,
-                "identities": identities,
-                "perimeters": perim_names,
-            }
-        )
+        for val in values.get("Identities", []):
+            for part in re.split(r",", val):
+                part = part.strip()
+                if part:
+                    identities.append(part)
+        rules.append({
+            "direction": direction,
+            "services": services,
+            "methods": methods,
+            "permissions": permissions,
+            "sources": sources,
+            "destinations": destinations,
+            "identities": identities,
+            "perimeters": perim_vals,
+        })
 
     return {
         "reqid": reqid,
