@@ -13,10 +13,27 @@ from typing import Any, Dict, List
 
 import yaml  # type: ignore
 
+
 def parse_issue_body(issue_text: str) -> Dict[str, Any]:
+    """
+    Parse the markdown issue text into a structured dictionary with fields:
+      - reqid: request ID
+      - perimeters: global perimeters (deprecated)
+      - third_party: any third party name
+      - justification: top-level justification
+      - rules: list of rule dicts (direction, services, methods, permissions,
+               sources, destinations, identities, perimeters).
+    The parser supports multiple rules, normalises identity prefixes, and skips
+    variant 'Third-Party Name' headings.
+    """
+    # Remove bold/italic/backtick markers but leave headings for matching
     clean_text = re.sub(r"[\*`]+", "", issue_text)
+
+    # Extract Request ID (or generate one if missing)
     reqid_match = re.search(r"Request ID.*?:\s*([A-Za-z0-9_-]+)", clean_text, re.IGNORECASE)
     reqid = reqid_match.group(1).strip() if reqid_match else f"REQ-{uuid.uuid4().hex[:8]}"
+
+    # Collect any global perimeters (for backward compatibility)
     perimeters: List[str] = []
     match_global_perimeter = re.search(r"^Perimeter Name\s*:?(.*)$", clean_text, re.IGNORECASE | re.MULTILINE)
     if match_global_perimeter:
@@ -25,9 +42,12 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
             perim = part.strip()
             if perim and perim != "(s)":
                 perimeters.append(perim)
+
+    # Third‑party name extraction
     third_party_match = re.search(r"Third\s*-?Party\s*Name.*?:\s*(.+)", issue_text, re.IGNORECASE)
     third_party = third_party_match.group(1).strip() if third_party_match else ""
-    # Capture justification only if there is a non-empty line; otherwise leave blank
+
+    # Justification: only capture a non-empty line following the heading if it isn't another heading
     justification = ""
     just_match = re.search(r"Justification\s*\n+([^\n]*)", issue_text, re.IGNORECASE)
     if just_match:
@@ -36,14 +56,19 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
             justification = candidate
 
     rules: List[Dict[str, Any]] = []
+
+    # Find each rule block starting at 'Perimeter Name(s)'
     rule_pattern = re.compile(
         r"Perimeter Name\(s\)?[^\n]*\n.*?(?=(?:\n\s*Perimeter Name\(s\)?|\Z))",
         re.IGNORECASE | re.DOTALL,
     )
     for rule_match in rule_pattern.finditer(clean_text):
         block = rule_match.group(0)
+
+        # Capture direction from the line immediately following the Direction header
         dir_match = re.search(r"Direction[^\n]*\n\s*(INGRESS|EGRESS)", block, re.IGNORECASE)
         direction = dir_match.group(1).upper() if dir_match else ""
+
         headings = [
             "Perimeter Name", "Perimeter Name(s)", "Services", "Methods",
             "Permissions", "Source / From", "From", "Destination / To",
@@ -52,31 +77,60 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
         ]
         non_data_headings = {"Direction", "Third-Party Name", "Third-Party Name (if applicable)", "Justification"}
         values: Dict[str, List[str]] = {h: [] for h in headings if h not in non_data_headings}
+
         current_heading: str | None = None
+
         for line in block.splitlines():
             stripped = line.strip()
             if not stripped:
                 continue
-            normalized = re.sub(r"[*`#]+", "", stripped).strip()
+            # Remove markdown markers and normalise various dash characters to a simple hyphen
+            normalized = re.sub(r"[*`#]+", "", stripped)
+            # Convert non-breaking hyphen, figure dash, en dash, em dash to '-'
+            normalized = (normalized
+                          .replace("\u2011", "-")
+                          .replace("\u2012", "-")
+                          .replace("\u2013", "-")
+                          .replace("\u2014", "-")
+                          .strip())
+
             matched_heading = None
             for h in headings:
-                if re.match(rf"^{re.escape(h)}", normalized, re.IGNORECASE):
+                # Normalize heading hyphens as well
+                h_norm = (h.replace("\u2011", "-")
+                            .replace("\u2012", "-")
+                            .replace("\u2013", "-")
+                            .replace("\u2014", "-"))
+                if re.match(rf"^{re.escape(h_norm)}", normalized, re.IGNORECASE):
                     matched_heading = h
                     break
+
             if matched_heading:
-                if matched_heading.lower() in {"direction",
-                                               "third-party name",
-                                               "third-party name (if applicable)",
-                                               "justification"}:
+                # Determine whether to capture values under this heading
+                skip_set = {"direction", "third-party name", "third-party name (if applicable)", "justification"}
+                check = (matched_heading.lower()
+                         .replace("\u2011", "-")
+                         .replace("\u2012", "-")
+                         .replace("\u2013", "-")
+                         .replace("\u2014", "-"))
+                if check in skip_set or check.startswith("direction"):
                     current_heading = None
                 else:
                     current_heading = matched_heading
                 continue
+
+            # If the line resembles any variant of 'Third-Party Name', skip it
+            if re.match(r"^third[-\u2011\u2012\u2013\u2014]?party name", normalized, re.IGNORECASE):
+                current_heading = None
+                continue
+
             if current_heading:
+                # Skip bullet list markers or example text
                 if stripped.startswith("-") or re.search(r"\bFor\b|\bExample\b", stripped, re.IGNORECASE):
                     continue
                 values[current_heading].append(stripped)
 
+        # Parse out perimeter names for this rule
         perim_vals: List[str] = []
         for key in ("Perimeter Name(s)", "Perimeter Name"):
             for val in values.get(key, []):
@@ -98,7 +152,7 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
         services = split_values("Services")
         methods  = split_values("Methods")
         permissions = split_values("Permissions")
-        sources  = split_values("Source / From") + split_values("From")
+        sources = split_values("Source / From") + split_values("From")
         destinations = split_values("Destination / To") + split_values("To")
 
         identities: List[str] = []
@@ -135,6 +189,7 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
         "justification": justification,
         "rules": rules,
     }
+
 
 def build_actions(parsed: Dict[str, Any], router: Dict[str, Any]) -> List[Dict[str, Any]]:
     actions: List[Dict[str, Any]] = []
@@ -313,6 +368,7 @@ def build_actions(parsed: Dict[str, Any], router: Dict[str, Any]) -> List[Dict[s
         })
     return actions
 
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Process a VPC Service Controls request issue")
     parser.add_argument("--issue-file", required=True, help="Path to the issue body file (markdown)")
@@ -335,6 +391,7 @@ def main() -> None:
     with open(args.output, "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)
     print(json.dumps(summary, indent=2))
+
 
 if __name__ == "__main__":
     main()
