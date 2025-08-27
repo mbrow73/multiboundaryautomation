@@ -104,6 +104,14 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
             if m:
                 methods.append(m)
 
+        # Permissions (optional)
+        permissions_raw = extract_section("Permissions", rule_text)
+        permissions: List[str] = []
+        for p in re.split(r"[,\n]+", permissions_raw):
+            p = p.strip()
+            if p:
+                permissions.append(p)
+
         sources_raw = extract_section("Source / From", rule_text)
         sources: List[str] = []
         for src in re.split(r"[,\n]+", sources_raw):
@@ -130,6 +138,7 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
                 "direction": direction,
                 "services": services,
                 "methods": methods,
+                "permissions": permissions,
                 "sources": sources,
                 "destinations": destinations,
                 "identities": identities,
@@ -199,36 +208,40 @@ def build_actions(parsed: Dict[str, Any], router: Dict[str, Any]) -> List[Dict[s
             direction = rule.get("direction", "").upper()
             services = rule.get("services", [])
             methods = rule.get("methods", [])
+            permissions = rule.get("permissions", [])
             sources = rule.get("sources", [])
             destinations = rule.get("destinations", [])
             identities = rule.get("identities", [])
 
-            # Build operations block for ingress/egress
-            operations: List[Dict[str, Any]] = []
+            # Build operations mapping for ingress/egress.  Each service maps to
+            # allowed methods and permissions.  Permissions are currently empty.
+            operations: Dict[str, Dict[str, Any]] = {}
             for svc in services:
-                op: Dict[str, Any] = {"service_name": svc}
-                if methods:
-                    op["method_selectors"] = [{"method": m} for m in methods]
-                operations.append(op)
+                svc_dict: Dict[str, Any] = {}
+                svc_dict["methods"] = methods.copy() if methods else []
+                svc_dict["permissions"] = permissions.copy() if permissions else []
+                operations[svc] = svc_dict
 
             if direction == "INGRESS":
                 # Build ingress policy object
-                ingress_from: Dict[str, Any] = {}
-                # Determine sources: IP ranges will require an access level
-                src_access_levels: List[str] = []
-                other_sources: List[Dict[str, Any]] = []
+                ingress_from: Dict[str, Any] = {
+                    "identity_type": "",
+                }
+                # Determine sources: IP ranges require an access level
+                access_levels_list: List[str] = []
+                resource_sources: List[str] = []
                 ip_subnets: List[str] = []
                 for src in sources:
                     if re.match(r"^\d+\.\d+\.\d+\.\d+(\/\d+)?$", src):
                         ip_subnets.append(src)
                     else:
-                        # Could be a project/resource
-                        other_sources.append({"resource": src})
+                        # treat as resource
+                        resource_sources.append(src)
                 # Create access level if ip_subnets found
                 if ip_subnets:
                     level_name = f"{safe_name(reqid)}-rule{idx+1}"
                     access_uri = f"accessPolicies/{policy_id}/accessLevels/{level_name}"
-                    src_access_levels.append(access_uri)
+                    access_levels_list.append(access_uri)
                     # Build HCL snippet for the access level
                     hcl_lines = [
                         f"resource \"google_access_context_manager_access_level\" \"{level_name}\" {{",
@@ -243,46 +256,38 @@ def build_actions(parsed: Dict[str, Any], router: Dict[str, Any]) -> List[Dict[s
                         "  }",
                         "}\n",
                     ]
-                    # Filter out empty strings
                     hcl_lines = [line for line in hcl_lines if line]
                     access_level_snippets.append("\n".join(hcl_lines))
-
-                if src_access_levels:
-                    ingress_from["access_levels"] = src_access_levels
-                if other_sources:
-                    ingress_from.setdefault("sources", []).extend(other_sources)
+                # Build sources object
+                sources_obj: Dict[str, Any] = {"resources": resource_sources, "access_levels": access_levels_list}
+                ingress_from["sources"] = sources_obj
+                # Identities
                 if identities:
-                    ingress_from.setdefault("identities", []).extend(identities)
-
+                    ingress_from["identities"] = identities
                 ingress_to: Dict[str, Any] = {}
                 if destinations:
                     ingress_to["resources"] = destinations
                 if operations:
                     ingress_to["operations"] = operations
-
                 ingress_policies.append({
-                    "ingress_from": ingress_from,
-                    "ingress_to": ingress_to,
+                    "from": ingress_from,
+                    "to": ingress_to,
                 })
 
             elif direction == "EGRESS":
                 # Build egress policy object
-                egress_from: Dict[str, Any] = {}
+                egress_from: Dict[str, Any] = {"identity_type": ""}
                 if identities:
                     egress_from["identities"] = identities
-                if sources:
-                    # Egress sources can specify resources or access levels; treat as resources
-                    egress_from["sources"] = [ {"resource": s} for s in sources ]
-
+                # For egress we ignore sources; only identities are used
                 egress_to: Dict[str, Any] = {}
                 if destinations:
                     egress_to["resources"] = destinations
                 if operations:
                     egress_to["operations"] = operations
-
                 egress_policies.append({
-                    "egress_from": egress_from,
-                    "egress_to": egress_to,
+                    "from": egress_from,
+                    "to": egress_to,
                 })
             else:
                 # Unknown or unsupported direction; skip
