@@ -64,53 +64,62 @@ jobs:
 
           def extract_rules(tfvars_content: str, array_name: str):
               """
-              Extract top-level rule objects from a HCL-like array definition.
-              Searches for the array name and the first '{', then collects { ... } blocks.
+              Extract rule objects from the specified array, scanning only between
+              the array's '[' and its matching ']'. If the array is empty, returns [].
               """
               start_idx = tfvars_content.find(array_name)
               if start_idx == -1:
                   return []
-              brace_start = tfvars_content.find('{', start_idx)
-              if brace_start == -1:
+              start_bracket = tfvars_content.find('[', start_idx)
+              if start_bracket == -1:
                   return []
-              idx = brace_start
-              brace_count = 0
-              current = []
-              rules = []
+              # Find the matching closing bracket ']' for this array
+              bracket_count = 1
+              end_bracket = -1
+              idx = start_bracket + 1
               while idx < len(tfvars_content):
                   char = tfvars_content[idx]
-                  if char == '{':
+                  if char == '[':
+                      bracket_count += 1
+                  elif char == ']':
+                      bracket_count -= 1
+                      if bracket_count == 0:
+                          end_bracket = idx
+                          break
+                  idx += 1
+              if end_bracket == -1:
+                  return []
+              # Extract body between '[' and ']'
+              body = tfvars_content[start_bracket + 1:end_bracket]
+              rules = []
+              brace_count = 0
+              current = []
+              for c in body:
+                  if c == '{':
                       if brace_count == 0:
                           current = []
                       brace_count += 1
-                      current.append(char)
-                  elif char == '}':
+                      current.append(c)
+                  elif c == '}':
                       brace_count -= 1
-                      current.append(char)
+                      current.append(c)
                       if brace_count == 0:
                           rules.append(''.join(current).strip())
                   elif brace_count > 0:
-                      current.append(char)
-                  # Stop scanning when we hit ']' after all braces, indicating end of array
-                  if char == ']' and brace_count == 0 and not current:
-                      break
-                  idx += 1
+                      current.append(c)
               return rules
 
           def append_rule(existing_content: str, array_name: str, new_rule: str) -> str:
               """
               Append a new rule object to an existing array, or create array if missing.
-              This avoids regex for brackets: find the '[' for the array, find its matching ']',
-              and insert the rule before the closing bracket.
+              Finds the matching '[]' of the array and inserts new_rule before the closing ']'.
               """
               start_idx = existing_content.find(array_name)
               if start_idx != -1:
-                  # Find the opening bracket '[' after the array name
                   start_bracket = existing_content.find('[', start_idx)
                   if start_bracket == -1:
-                      # No bracket found; create a new array
                       return existing_content + f"\n{array_name} = [\n  {new_rule.strip()}\n]\n"
-                  # Find the matching closing bracket ']'
+                  # Locate the matching closing bracket
                   bracket_count = 0
                   idx = start_bracket
                   while idx < len(existing_content):
@@ -122,21 +131,20 @@ jobs:
                           if bracket_count == 0:
                               break
                       idx += 1
-                  # Extract current array body, trim trailing whitespace
+                  # Current body of the array
                   body = existing_content[start_bracket+1:idx]
-                  body_rstrip = body.rstrip()
-                  if body_rstrip.strip():
-                      # Determine if the body already has a trailing comma
-                      if body_rstrip.rstrip().endswith(','):
-                          body = body_rstrip + "\n  " + new_rule.strip()
+                    # Remove trailing whitespace only
+                  trimmed = body.rstrip()
+                  if trimmed.strip():
+                      # If there's a trailing comma, do not add another one
+                      if trimmed.rstrip().endswith(','):
+                          body = trimmed + "\n  " + new_rule.strip()
                       else:
-                          body = body_rstrip + ",\n  " + new_rule.strip()
+                          body = trimmed + ",\n  " + new_rule.strip()
                   else:
                       body = "\n  " + new_rule.strip()
-                  # Reconstruct the content: everything up to '[', new body, everything from ']'
                   return existing_content[:start_bracket+1] + body + existing_content[idx:]
               else:
-                  # If the array does not exist, create it
                   return existing_content + f"\n{array_name} = [\n  {new_rule.strip()}\n]\n"
 
           data = json.load(open('request_processing.json'))
@@ -198,7 +206,7 @@ jobs:
               subprocess.run(['git', '-C', repo_dir, 'config', 'user.name', 'VPC SC Bot'], check=True)
               # Stage all changes
               subprocess.run(['git', '-C', repo_dir, 'add', '.'], check=True)
-              # Check if there are any staged changes; git diff --cached --quiet returns 0 if none
+              # Commit only if changes exist
               status = subprocess.run(['git', '-C', repo_dir, 'diff', '--cached', '--quiet'])
               if status.returncode != 0:
                   subprocess.run(['git', '-C', repo_dir, 'commit', '-m', commit], check=True)
