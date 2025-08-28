@@ -46,12 +46,7 @@ jobs:
         id: read_actions
         run: |
           if [ -f request_processing.json ]; then
-            python3 - <<'PY'
-            import json
-            with open('request_processing.json') as f:
-              data = json.load(f)
-            print(data.get('actions', []))
-            PY
+            python3 -c "import json; print(json.load(open('request_processing.json')).get('actions', []))"
           else
             echo "[]"
           fi
@@ -77,7 +72,7 @@ jobs:
               subprocess.run(['git', 'clone', f'https://github.com/{repo}.git', repo_dir], check=True)
               subprocess.run(['git', '-C', repo_dir, 'checkout', '-b', branch], check=True)
 
-              # Overwrite files (no merging logic)
+              # Overwrite files with handler output; no merging
               for change in changes:
                   file_path = os.path.join(repo_dir, change['file'])
                   os.makedirs(os.path.dirname(file_path), exist_ok=True)
@@ -87,15 +82,10 @@ jobs:
               subprocess.run(['git', '-C', repo_dir, 'config', 'user.email', 'bot@example.com'], check=True)
               subprocess.run(['git', '-C', repo_dir, 'config', 'user.name', 'VPC SC Bot'], check=True)
               subprocess.run(['git', '-C', repo_dir, 'add', '.'], check=True)
-              # Commit only if there are changes
-              status = subprocess.run(['git', '-C', repo_dir, 'status', '--porcelain'], capture_output=True, text=True)
-              if status.stdout.strip():
-                  subprocess.run(['git', '-C', repo_dir, 'commit', '-m', commit], check=True)
-                  subprocess.run(['git', '-C', repo_dir, 'push', '--set-upstream', 'origin', branch], check=True)
-                  subprocess.run(['gh', 'pr', 'create', '--repo', repo, '--head', branch,
-                                  '--title', pr_title, '--body', pr_body], cwd=repo_dir, check=True)
-              else:
-                  print(f"No changes to commit for {repo}; skipping PR.")
+              subprocess.run(['git', '-C', repo_dir, 'commit', '-m', commit], check=True)
+              subprocess.run(['git', '-C', repo_dir, 'push', '--set-upstream', 'origin', branch], check=True)
+              subprocess.run(['gh', 'pr', 'create', '--repo', repo, '--head', branch,
+                              '--title', pr_title, '--body', pr_body], cwd=repo_dir, check=True)
           PY
 
       - name: Comment on the issue with summary
