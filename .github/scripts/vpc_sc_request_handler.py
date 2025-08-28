@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
-VPC Service Controls request handler with TLM-ID support.
-Parses a GitHub issue body into per-rule structures, normalises identities,
-and builds ingress/egress policy objects in HCL-ready form. When IP ranges
-are specified in ingress rules, it uses a module to create access levels.
+VPC Service Controls request handler with TLM-ID and per-service methods/permissions.
+Assumes the issue template lists services once, then specifies service-specific
+methods and permissions using "service: method1, method2" syntax.
 """
 
 import argparse
@@ -28,7 +27,7 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
             if perim and perim != "(s)":
                 perimeters.append(perim)
 
-    # Capture TLM-ID (either inline or on the next line)
+    # Capture TLM-ID or fallback to third-party name
     tlm_match = re.search(r"TLM[-\u2011\u2012\u2013\u2014]?ID.*?:\s*(.+)", issue_text, re.IGNORECASE)
     if not tlm_match:
         tlm_match = re.search(r"TLM[-\u2011\u2012\u2013\u2014]?ID.*?\n+([^\n]*)", issue_text, re.IGNORECASE)
@@ -96,12 +95,12 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
                 else:
                     current_heading = matched_heading
                 continue
-            # Skip TLM-ID or Third-Party header lines
             if re.match(r"^(tlm|third)[-\u2011\u2012\u2013\u2014]?id", normalized, re.IGNORECASE) or \
                re.match(r"^third\s*-?party", normalized, re.IGNORECASE):
                 current_heading = None
                 continue
             if current_heading:
+                # Skip examples or bullet markers
                 if stripped.startswith("-") or re.search(r"\bFor\b|\bExample\b", stripped, re.IGNORECASE):
                     continue
                 values[current_heading].append(stripped)
@@ -125,8 +124,8 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
             return result
 
         services = split_values("Services")
-        methods  = split_values("Methods")
-        permissions = split_values("Permissions")
+        methods_raw  = values.get("Methods", [])
+        permissions_raw = values.get("Permissions", [])
         sources   = split_values("Source / From") + split_values("From")
         destinations = split_values("Destination / To") + split_values("To")
 
@@ -145,11 +144,28 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
                             part = f"user:{part}"
                     identities.append(part)
 
+        # Parse per-service methods/permissions from "service: item1, item2" lines
+        service_methods: Dict[str, List[str]] = {svc: [] for svc in services}
+        service_permissions: Dict[str, List[str]] = {svc: [] for svc in services}
+
+        for line in methods_raw:
+            if ":" in line:
+                svc, mlist = line.split(":", 1)
+                svc = svc.strip()
+                if svc in service_methods:
+                    service_methods[svc] = [m.strip() for m in mlist.split(",") if m.strip()]
+        for line in permissions_raw:
+            if ":" in line:
+                svc, plist = line.split(":", 1)
+                svc = svc.strip()
+                if svc in service_permissions:
+                    service_permissions[svc] = [p.strip() for p in plist.split(",") if p.strip()]
+
         rules.append({
             "direction": direction,
             "services": services,
-            "methods": methods,
-            "permissions": permissions,
+            "service_methods": service_methods,
+            "service_permissions": service_permissions,
             "sources": sources,
             "destinations": destinations,
             "identities": identities,
@@ -180,20 +196,22 @@ def build_actions(parsed: Dict[str, Any], router: Dict[str, Any]) -> List[Dict[s
     for idx, rule in enumerate(rules):
         direction = rule.get("direction", "").upper()
         services  = rule.get("services", [])
-        methods   = rule.get("methods", [])
-        permissions = rule.get("permissions", [])
+        service_methods  = rule.get("service_methods", {})
+        service_permissions = rule.get("service_permissions", {})
         sources   = rule.get("sources", [])
         destinations = rule.get("destinations", [])
         identities  = rule.get("identities", [])
         rule_perims: List[str] = rule.get("perimeters", []) or parsed.get("perimeters", [])
 
+        # Build operations mapping per service
         operations: Dict[str, Dict[str, Any]] = {}
         for svc in services:
-            svc_methods = methods.copy() if methods else ["*"]
-            svc_permissions = permissions.copy() if permissions else []
+            svc_methods = service_methods.get(svc)
+            svc_perms   = service_permissions.get(svc)
+            # If no methods specified, use ["*"] as wildcard
             operations[svc] = {
-                "methods": svc_methods,
-                "permissions": svc_permissions,
+                "methods": svc_methods if svc_methods else ["*"],
+                "permissions": svc_perms if svc_perms else [],
             }
 
         for perim in rule_perims:
