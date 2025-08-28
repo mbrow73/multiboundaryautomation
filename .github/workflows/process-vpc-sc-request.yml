@@ -27,10 +27,10 @@ jobs:
       - name: Write issue body to file
         run: echo "${{ github.event.issue.body }}" > issue_body.md
 
-      - name: Install dependencies
+      - name: Install Python dependencies
         run: python -m pip install --quiet pyyaml
 
-      - name: Configure git for cross‑repo pushes
+      - name: Configure git for cross-repo pushes
         run: |
           git config --global url."https://x-access-token:${{ secrets.CROSS_REPO_TOKEN }}@github.com/".insteadOf https://github.com/
 
@@ -42,187 +42,41 @@ jobs:
             --workdir . \
             --output request_processing.json
 
+      - name: Validate VPC SC request
+        id: validate
+        run: |
+          python3 .github/scripts/validate_vpc_sc_request.py \
+            --issue-file issue_body.md \
+            --router-file router.yml
+
       - name: Read actions from summary
         id: read_actions
         run: |
-          if [ -f request_processing.json ]; then
-            python3 -c "import json; print(json.load(open('request_processing.json')).get('actions', []))"
-          else
-            echo "[]"
-          fi
+          python3 -c "import json, os, sys; data=json.load(open('request_processing.json')) if os.path.exists('request_processing.json') else {}; print(json.dumps(data.get('actions', [])))"
+
+      - name: Label and comment if invalid
+        if: ${{ steps.validate.outputs.valid != 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ERRORS: ${{ steps.validate.outputs.errors }}
+        run: |
+          gh issue edit ${{ github.event.issue.number }} --add-label "needs fix"
+          python3 -c "import json, os; errs=json.loads(os.environ.get('ERRORS','[]')); body='**Validation Issues Detected:**\\n' + '\\n'.join('- '+e for e in errs); open('comment.md','w').write(body)"
+          gh issue comment ${{ github.event.issue.number }} --body "$(cat comment.md)"
 
       - name: Apply changes and create PRs
-        if: steps.read_actions.outputs.stdout != '[]'
+        if: ${{ steps.validate.outputs.valid == 'true' && steps.read_actions.outputs.stdout != '[]' }}
         env:
           CROSS_REPO_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
           GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
         run: |
-          python3 - <<'PY'
-          import json
-          import os
-          import subprocess
+          python3 .github/scripts/apply_changes.py --summary request_processing.json
 
-          def extract_rules(tfvars_content: str, array_name: str):
-              """
-              Extract rule objects from the specified array, scanning only between
-              the array's '[' and its matching ']'. If the array is empty, returns [].
-              """
-              start_idx = tfvars_content.find(array_name)
-              if start_idx == -1:
-                  return []
-              start_bracket = tfvars_content.find('[', start_idx)
-              if start_bracket == -1:
-                  return []
-              # Find the matching closing bracket ']' for this array
-              bracket_count = 1
-              end_bracket = -1
-              idx = start_bracket + 1
-              while idx < len(tfvars_content):
-                  char = tfvars_content[idx]
-                  if char == '[':
-                      bracket_count += 1
-                  elif char == ']':
-                      bracket_count -= 1
-                      if bracket_count == 0:
-                          end_bracket = idx
-                          break
-                  idx += 1
-              if end_bracket == -1:
-                  return []
-              # Extract body between '[' and ']'
-              body = tfvars_content[start_bracket + 1:end_bracket]
-              rules = []
-              brace_count = 0
-              current = []
-              for c in body:
-                  if c == '{':
-                      if brace_count == 0:
-                          current = []
-                      brace_count += 1
-                      current.append(c)
-                  elif c == '}':
-                      brace_count -= 1
-                      current.append(c)
-                      if brace_count == 0:
-                          rules.append(''.join(current).strip())
-                  elif brace_count > 0:
-                      current.append(c)
-              return rules
-
-          def append_rule(existing_content: str, array_name: str, new_rule: str) -> str:
-              """
-              Append a new rule object to an existing array, or create array if missing.
-              Finds the matching '[]' of the array and inserts new_rule before the closing ']'.
-              """
-              start_idx = existing_content.find(array_name)
-              if start_idx != -1:
-                  start_bracket = existing_content.find('[', start_idx)
-                  if start_bracket == -1:
-                      return existing_content + f"\n{array_name} = [\n  {new_rule.strip()}\n]\n"
-                  # Locate the matching closing bracket
-                  bracket_count = 0
-                  idx = start_bracket
-                  while idx < len(existing_content):
-                      char = existing_content[idx]
-                      if char == '[':
-                          bracket_count += 1
-                      elif char == ']':
-                          bracket_count -= 1
-                          if bracket_count == 0:
-                              break
-                      idx += 1
-                  # Current body of the array
-                  body = existing_content[start_bracket+1:idx]
-                    # Remove trailing whitespace only
-                  trimmed = body.rstrip()
-                  if trimmed.strip():
-                      # If there's a trailing comma, do not add another one
-                      if trimmed.rstrip().endswith(','):
-                          body = trimmed + "\n  " + new_rule.strip()
-                      else:
-                          body = trimmed + ",\n  " + new_rule.strip()
-                  else:
-                      body = "\n  " + new_rule.strip()
-                  return existing_content[:start_bracket+1] + body + existing_content[idx:]
-              else:
-                  return existing_content + f"\n{array_name} = [\n  {new_rule.strip()}\n]\n"
-
-          data = json.load(open('request_processing.json'))
-          for action in data.get('actions', []):
-              repo      = action['repo']
-              branch    = action['branch']
-              commit    = action['commit_message']
-              pr_title  = action['pr_title']
-              pr_body   = action['pr_body']
-              changes   = action['changes']
-              repo_dir  = f"tmp/{repo.replace('/', '_')}"
-              subprocess.run(['git', 'clone', f'https://github.com/{repo}.git', repo_dir], check=True)
-              subprocess.run(['git', '-C', repo_dir, 'checkout', '-b', branch], check=True)
-
-              for change in changes:
-                  file_rel = change['file']
-                  file_path = os.path.join(repo_dir, file_rel)
-                  os.makedirs(os.path.dirname(file_path), exist_ok=True)
-                  content_to_write = change['content']
-
-                  # 1) Merge ingress/egress rules into tfvars
-                  if ('ingress_policies' in content_to_write and 'egress_policies' in content_to_write
-                      and file_rel.endswith('.tfvars')):
-                      try:
-                          with open(file_path, 'r') as f:
-                              existing = f.read()
-                      except FileNotFoundError:
-                          existing = ''
-                      if existing:
-                          new_ingress_rules = extract_rules(content_to_write, 'ingress_policies')
-                          new_egress_rules  = extract_rules(content_to_write, 'egress_policies')
-                          updated = existing
-                          for rule in new_ingress_rules:
-                              updated = append_rule(updated, 'ingress_policies', rule)
-                          for rule in new_egress_rules:
-                              updated = append_rule(updated, 'egress_policies', rule)
-                          content_to_write = updated
-
-                  # 2) Append access-level modules to existing .tf file
-                  elif (file_rel.endswith('.tf')
-                        and 'module "vpc-service-controls-access-level_' in content_to_write):
-                      try:
-                          with open(file_path, 'r') as f:
-                              existing = f.read()
-                      except FileNotFoundError:
-                          existing = ''
-                      if existing:
-                          existing_trimmed = existing.rstrip()
-                          new_trimmed = content_to_write.strip()
-                          if existing_trimmed:
-                              content_to_write = existing_trimmed + "\n\n" + new_trimmed + "\n"
-                          else:
-                              content_to_write = new_trimmed + "\n"
-
-                  with open(file_path, 'w') as f:
-                      f.write(content_to_write)
-
-              subprocess.run(['git', '-C', repo_dir, 'config', 'user.email', 'bot@example.com'], check=True)
-              subprocess.run(['git', '-C', repo_dir, 'config', 'user.name', 'VPC SC Bot'], check=True)
-              # Stage all changes
-              subprocess.run(['git', '-C', repo_dir, 'add', '.'], check=True)
-              # Commit only if changes exist
-              status = subprocess.run(['git', '-C', repo_dir, 'diff', '--cached', '--quiet'])
-              if status.returncode != 0:
-                  subprocess.run(['git', '-C', repo_dir, 'commit', '-m', commit], check=True)
-                  subprocess.run(['git', '-C', repo_dir, 'push', '--set-upstream', 'origin', branch], check=True)
-                  subprocess.run([
-                      'gh', 'pr', 'create', '--repo', repo, '--head', branch,
-                      '--title', pr_title, '--body', pr_body
-                  ], cwd=repo_dir, check=True)
-          PY
-
-      - name: Comment on the issue with summary
+      - name: Comment with summary
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           if [ -f request_processing.json ]; then
-            gh issue comment ${{ github.event.issue.number }} --body "$(printf '**VPC Service Controls request processed.**\n```json\n%s\n```' "$(cat request_processing.json)")"
+            gh issue comment ${{ github.event.issue.number }} --body "$(printf '**VPC Service Controls request processed.**\\n```json\\n%s\\n```' "$(cat request_processing.json)")"
           else
             gh issue comment ${{ github.event.issue.number }} --body "Error: request_processing.json was not generated."
-          fi
