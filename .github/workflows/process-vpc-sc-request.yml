@@ -64,33 +64,40 @@ jobs:
           import re
 
           def extract_rules(tfvars_content: str, array_name: str):
-              """Extract top-level dict strings from an array in HCL-like content."""
-              pattern = re.compile(rf"{array_name}\s*=\s*\[(.*?)]", re.DOTALL)
-              match = pattern.search(tfvars_content)
+              """
+              Extract all top-level rule objects from a HCL-like array definition.
+              This robust version finds the array start and scans for matching braces.
+              """
+              start = re.search(rf"{array_name}\\s*=\\s*\\[", tfvars_content, re.DOTALL)
+              if not start:
+                  return []
+              idx = start.end()
               rules = []
-              if match:
-                  body = match.group(1)
-                  stack = 0
-                  current = []
-                  for char in body:
-                      if char == '{':
-                          if stack == 0:
-                              current = []
-                          stack += 1
-                          current.append(char)
-                      elif char == '}':
-                          stack -= 1
-                          current.append(char)
-                          if stack == 0:
-                              rules.append(''.join(current).strip())
-                      else:
-                          if stack > 0:
-                              current.append(char)
+              brace_count = 0
+              current = []
+              while idx < len(tfvars_content):
+                  char = tfvars_content[idx]
+                  if char == '{':
+                      if brace_count == 0:
+                          current = []
+                      brace_count += 1
+                      current.append(char)
+                  elif char == '}':
+                      brace_count -= 1
+                      current.append(char)
+                      if brace_count == 0:
+                          rules.append(''.join(current).strip())
+                  elif brace_count > 0:
+                      current.append(char)
+                  # stop scanning once we leave the array (a ']' encountered when not within braces)
+                  if char == ']' and brace_count == 0 and not current:
+                      break
+                  idx += 1
               return rules
 
           def append_rule(existing_content: str, array_name: str, new_rule: str) -> str:
               """Append a new rule object to an existing array, or create array if missing."""
-              pattern = re.compile(rf"({array_name}\s*=\s*\[)(.*?)(\])", re.DOTALL)
+              pattern = re.compile(rf"({array_name}\\s*=\\s*\\[)(.*?)(\\])", re.DOTALL)
               match = pattern.search(existing_content)
               if match:
                   before, body, after = match.groups()
@@ -160,11 +167,17 @@ jobs:
 
               subprocess.run(['git', '-C', repo_dir, 'config', 'user.email', 'bot@example.com'], check=True)
               subprocess.run(['git', '-C', repo_dir, 'config', 'user.name', 'VPC SC Bot'], check=True)
+              # Stage all changes
               subprocess.run(['git', '-C', repo_dir, 'add', '.'], check=True)
-              subprocess.run(['git', '-C', repo_dir, 'commit', '-m', commit], check=True)
-              subprocess.run(['git', '-C', repo_dir, 'push', '--set-upstream', 'origin', branch], check=True)
-              subprocess.run(['gh', 'pr', 'create', '--repo', repo, '--head', branch,
-                              '--title', pr_title, '--body', pr_body], cwd=repo_dir, check=True)
+              # Check if there are any staged changes; git diff --cached --quiet returns 0 if none
+              status = subprocess.run(['git', '-C', repo_dir, 'diff', '--cached', '--quiet'])
+              if status.returncode != 0:
+                  subprocess.run(['git', '-C', repo_dir, 'commit', '-m', commit], check=True)
+                  subprocess.run(['git', '-C', repo_dir, 'push', '--set-upstream', 'origin', branch], check=True)
+                  subprocess.run([
+                      'gh', 'pr', 'create', '--repo', repo, '--head', branch,
+                      '--title', pr_title, '--body', pr_body
+                  ], cwd=repo_dir, check=True)
           PY
 
       - name: Comment on the issue with summary
