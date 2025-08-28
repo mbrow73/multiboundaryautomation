@@ -351,7 +351,7 @@ def main() -> None:
     actions = build_actions(parsed, router)
     summary = {"reqid": parsed.get("reqid"), "actions": actions}
     with open(args.output, "w", encoding="utf-8") as f:
-        json.dump(summary, f, indent 2)
+        json.dump(summary, f, indent=2)
     print(json.dumps(summary, indent=2))
 
 
