@@ -65,8 +65,7 @@ jobs:
           def extract_rules(tfvars_content: str, array_name: str):
               """
               Extract top-level rule objects from a HCL-like array definition.
-              This implementation avoids regex for the '[' and instead searches for the array name
-              and the first '{', then scans for balanced braces.
+              Searches for the array name and the first '{', then collects { ... } blocks.
               """
               start_idx = tfvars_content.find(array_name)
               if start_idx == -1:
@@ -92,26 +91,52 @@ jobs:
                           rules.append(''.join(current).strip())
                   elif brace_count > 0:
                       current.append(char)
-                  # Stop scanning when we see ']' after leaving all braces (end of array)
+                  # Stop scanning when we hit ']' after all braces, indicating end of array
                   if char == ']' and brace_count == 0 and not current:
                       break
                   idx += 1
               return rules
 
           def append_rule(existing_content: str, array_name: str, new_rule: str) -> str:
-              """Append a new rule object to an existing array, or create array if missing."""
-              import re
-              pattern = re.compile(rf"({array_name}\\s*=\\s*\\[)(.*?)(\\])", re.DOTALL)
-              match = pattern.search(existing_content)
-              if match:
-                  before, body, after = match.groups()
-                  body = body.rstrip()
-                  if body.strip():
-                      body = body + ",\n  " + new_rule.strip()
+              """
+              Append a new rule object to an existing array, or create array if missing.
+              This avoids regex for brackets: find the '[' for the array, find its matching ']',
+              and insert the rule before the closing bracket.
+              """
+              start_idx = existing_content.find(array_name)
+              if start_idx != -1:
+                  # Find the opening bracket '[' after the array name
+                  start_bracket = existing_content.find('[', start_idx)
+                  if start_bracket == -1:
+                      # No bracket found; create a new array
+                      return existing_content + f"\n{array_name} = [\n  {new_rule.strip()}\n]\n"
+                  # Find the matching closing bracket ']'
+                  bracket_count = 0
+                  idx = start_bracket
+                  while idx < len(existing_content):
+                      char = existing_content[idx]
+                      if char == '[':
+                          bracket_count += 1
+                      elif char == ']':
+                          bracket_count -= 1
+                          if bracket_count == 0:
+                              break
+                      idx += 1
+                  # Extract current array body, trim trailing whitespace
+                  body = existing_content[start_bracket+1:idx]
+                  body_rstrip = body.rstrip()
+                  if body_rstrip.strip():
+                      # Determine if the body already has a trailing comma
+                      if body_rstrip.rstrip().endswith(','):
+                          body = body_rstrip + "\n  " + new_rule.strip()
+                      else:
+                          body = body_rstrip + ",\n  " + new_rule.strip()
                   else:
                       body = "\n  " + new_rule.strip()
-                  return existing_content[:match.start(2)] + body + existing_content[match.end(2):]
+                  # Reconstruct the content: everything up to '[', new body, everything from ']'
+                  return existing_content[:start_bracket+1] + body + existing_content[idx:]
               else:
+                  # If the array does not exist, create it
                   return existing_content + f"\n{array_name} = [\n  {new_rule.strip()}\n]\n"
 
           data = json.load(open('request_processing.json'))
