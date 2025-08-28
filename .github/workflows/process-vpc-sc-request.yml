@@ -80,3 +80,4 @@ jobs:
             gh issue comment ${{ github.event.issue.number }} --body "$(printf '**VPC Service Controls request processed.**\\n```json\\n%s\\n```' "$(cat request_processing.json)")"
           else
             gh issue comment ${{ github.event.issue.number }} --body "Error: request_processing.json was not generated."
+          fi
