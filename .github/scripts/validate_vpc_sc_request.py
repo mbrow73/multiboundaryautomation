@@ -6,7 +6,7 @@ Validates a VPC Service Controls request by parsing the issue body and
 checking for common mistakes:
   * Project IDs must be 10 digits when using projects/<id> format
   * Each perimeter referenced must exist in router.yml
-  * 'sources'/'From' may only appear in ingress rules
+  * 'From' values may only appear in INGRESS rules
   * IP addresses must be in CIDR notation x.x.x.x/xx and require a TLM-ID on ingress
 Outputs are written to $GITHUB_OUTPUT:
   - valid: 'true' or 'false'
@@ -117,8 +117,9 @@ def validate_data(parsed: Dict[str, Any], router: Dict[str, Any]) -> List[str]:
                 proj_id = res.split("/", 1)[-1]
                 if not re.fullmatch(r"\d{10}", proj_id):
                     errors.append(f"Resource '{res}' must be of form projects/<10-digit ID>.")
+        # Only flag when a non-empty 'From' value is provided on EGRESS
         if direction == "EGRESS" and rule.get("sources"):
-            errors.append("The 'From' or 'sources' field is not allowed on EGRESS rules.")
+            errors.append("The 'From' field must be empty for EGRESS rules. Remove the value(s) provided.")
         for src in rule.get("sources", []):
             if "." in src and not src.startswith("projects/"):
                 if not ip_cidr_re.fullmatch(src):
