@@ -61,20 +61,23 @@ jobs:
           import json
           import os
           import subprocess
-          import re
 
           def extract_rules(tfvars_content: str, array_name: str):
               """
-              Extract all top-level rule objects from a HCL-like array definition.
-              This robust version finds the array start and scans for matching braces.
+              Extract top-level rule objects from a HCL-like array definition.
+              This implementation avoids regex for the '[' and instead searches for the array name
+              and the first '{', then scans for balanced braces.
               """
-              start = re.search(rf"{array_name}\\s*=\\s*\\[", tfvars_content, re.DOTALL)
-              if not start:
+              start_idx = tfvars_content.find(array_name)
+              if start_idx == -1:
                   return []
-              idx = start.end()
-              rules = []
+              brace_start = tfvars_content.find('{', start_idx)
+              if brace_start == -1:
+                  return []
+              idx = brace_start
               brace_count = 0
               current = []
+              rules = []
               while idx < len(tfvars_content):
                   char = tfvars_content[idx]
                   if char == '{':
@@ -89,7 +92,7 @@ jobs:
                           rules.append(''.join(current).strip())
                   elif brace_count > 0:
                       current.append(char)
-                  # stop scanning once we leave the array (a ']' encountered when not within braces)
+                  # Stop scanning when we see ']' after leaving all braces (end of array)
                   if char == ']' and brace_count == 0 and not current:
                       break
                   idx += 1
@@ -97,6 +100,7 @@ jobs:
 
           def append_rule(existing_content: str, array_name: str, new_rule: str) -> str:
               """Append a new rule object to an existing array, or create array if missing."""
+              import re
               pattern = re.compile(rf"({array_name}\\s*=\\s*\\[)(.*?)(\\])", re.DOTALL)
               match = pattern.search(existing_content)
               if match:
