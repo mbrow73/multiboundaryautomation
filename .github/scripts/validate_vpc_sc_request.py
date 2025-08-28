@@ -1550,12 +1550,13 @@ def validate_rules(rules: List[Dict[str, Any]], router: Dict[str, Any]) -> List[
 
     for rule in rules:
         direction = rule.get("direction", "").upper()
-        # Validate perimeter names
+
+        # 1. Perimeter existence
         for p in rule.get("perimeters", []):
             if p not in router_perims:
                 errors.append(f"Perimeter '{p}' does not exist in router.yml.")
 
-        # Validate 10-digit project IDs
+        # 2. Project ID length
         for res in rule.get("sources", []) + rule.get("destinations", []):
             if res.startswith("projects/"):
                 proj_id = res.split("/", 1)[-1]
@@ -1564,10 +1565,9 @@ def validate_rules(rules: List[Dict[str, Any]], router: Dict[str, Any]) -> List[
                         f"Resource '{res}' must be of form projects/<10-digit ID>."
                     )
 
-        # IP format and TLM-ID requirement for ingress rules
+        # 3. IP format and TLM requirement on ingress
         tlm_id = rule.get("tlm_id", "").strip()
         for src in rule.get("sources", []):
-            # Treat dotted addresses that are not projects/... as potential CIDR
             if "." in src and not src.startswith("projects/"):
                 if not ip_cidr_re.fullmatch(src):
                     errors.append(f"IP '{src}' is not in CIDR format (x.x.x.x/xx).")
@@ -1576,28 +1576,34 @@ def validate_rules(rules: List[Dict[str, Any]], router: Dict[str, Any]) -> List[
                         "TLM-ID is required when specifying IP subnets in an INGRESS rule."
                     )
 
-        # Validate methods only if the service is in SUPPORTED_METHODS
+        # 4. Method validation
         svc_methods: Dict[str, List[str]] = rule.get("service_methods", {})
         for svc, mlist in svc_methods.items():
-            # If the service has no validation map, skip method checks
-            if svc not in SUPPORTED_METHODS:
-                continue
             # Skip empty lists or wildcard lists
             if not mlist or mlist == ["*"]:
+                continue
+            # Fail if the service isn't listed in SUPPORTED_METHODS
+            if svc not in SUPPORTED_METHODS:
+                errors.append(
+                    f"Service '{svc}' does not have a supported methods list; remove or correct method specifications."
+                )
                 continue
             allowed = SUPPORTED_METHODS[svc]
             for m in mlist:
                 if m not in allowed:
                     errors.append(f"Unsupported method '{m}' for service '{svc}'.")
 
-        # Validate permissions only if the service is in SUPPORTED_PERMISSIONS
+        # 5. Permission validation
         svc_perms: Dict[str, List[str]] = rule.get("service_permissions", {})
         for svc, plist in svc_perms.items():
-            # If the service has no validation map, skip permission checks
-            if svc not in SUPPORTED_PERMISSIONS:
-                continue
             # Skip empty lists or wildcard lists
             if not plist or plist == ["*"]:
+                continue
+            # Fail if the service isn't listed in SUPPORTED_PERMISSIONS
+            if svc not in SUPPORTED_PERMISSIONS:
+                errors.append(
+                    f"Service '{svc}' does not have a supported permissions list; remove or correct permission specifications."
+                )
                 continue
             allowed = SUPPORTED_PERMISSIONS[svc]
             for p in plist:
@@ -1608,16 +1614,17 @@ def validate_rules(rules: List[Dict[str, Any]], router: Dict[str, Any]) -> List[
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Validate a VPC SC request")
-    parser.add_argument("--issue-file", required=True, help="Path to the issue body markdown")
+    parser.add_argument("--issue-file", required=True, help="Path to issue_body.md")
     parser.add_argument("--router-file", required=True, help="Path to router.yml")
     args = parser.parse_args()
 
+    # Read inputs
     with open(args.issue_file, encoding="utf-8") as f:
         issue_text = f.read()
     with open(args.router_file, encoding="utf-8") as f:
         router = yaml.safe_load(f) or {}
 
-    # Use handler's parser to get structured rules
+    # Parse using the handler's function
     parsed = parse_issue_body(issue_text)
     enriched_rules = []
     for rule in parsed.get("rules", []):
@@ -1628,14 +1635,14 @@ def main() -> None:
     errors = validate_rules(enriched_rules, router)
     valid = "true" if not errors else "false"
 
-    # Output for GitHub Actions
+    # Write results to GitHub Actions outputs
     out_path = os.environ.get("GITHUB_OUTPUT")
     if out_path:
         with open(out_path, "a") as out:
             out.write(f"valid={valid}\n")
             out.write(f"errors={json.dumps(errors)}\n")
 
-    # Print errors or success message
+    # Log results
     if errors:
         print("Validation failed:")
         for err in errors:
