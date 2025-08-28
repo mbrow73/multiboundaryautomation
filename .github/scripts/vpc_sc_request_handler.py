@@ -237,7 +237,7 @@ def build_actions(parsed: Dict[str, Any], router: Dict[str, Any]) -> List[Dict[s
                     access_levels_list.append(level_name)
                     module_lines = [
                         f'module "vpc-service-controls-access-level_{level_name}" {{',
-                        '  source  = "tfe.<domain>/<namespace>/vpc-service-controls/google//modules/access_level"',
+                        '  source  = "tfe. / /vpc-service-controls/google//modules/access_level"',
                         '  version = "0.0.4"',
                         '  policy  = var.policy',
                         f'  name    = "{level_name}"',
@@ -351,7 +351,7 @@ def main() -> None:
     actions = build_actions(parsed, router)
     summary = {"reqid": parsed.get("reqid"), "actions": actions}
     with open(args.output, "w", encoding="utf-8") as f:
-        json.dump(summary, f, indent=2)
+        json.dump(summary, f, indent 2)
     print(json.dumps(summary, indent=2))
 
 

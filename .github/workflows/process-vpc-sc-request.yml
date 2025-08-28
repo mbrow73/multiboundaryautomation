@@ -58,7 +58,50 @@ jobs:
           GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
         run: |
           python3 - <<'PY'
-          import json, os, subprocess
+          import json
+          import os
+          import subprocess
+          import re
+
+          def extract_rules(tfvars_content: str, array_name: str):
+              """Extract top-level dict strings from an array in HCL-like content."""
+              pattern = re.compile(rf"{array_name}\s*=\s*\[(.*?)]", re.DOTALL)
+              match = pattern.search(tfvars_content)
+              rules = []
+              if match:
+                  body = match.group(1)
+                  stack = 0
+                  current = []
+                  for char in body:
+                      if char == '{':
+                          if stack == 0:
+                              current = []
+                          stack += 1
+                          current.append(char)
+                      elif char == '}':
+                          stack -= 1
+                          current.append(char)
+                          if stack == 0:
+                              rules.append(''.join(current).strip())
+                      else:
+                          if stack > 0:
+                              current.append(char)
+              return rules
+
+          def append_rule(existing_content: str, array_name: str, new_rule: str) -> str:
+              """Append a new rule object to an existing array, or create array if missing."""
+              pattern = re.compile(rf"({array_name}\s*=\s*\[)(.*?)(\])", re.DOTALL)
+              match = pattern.search(existing_content)
+              if match:
+                  before, body, after = match.groups()
+                  body = body.rstrip()
+                  if body.strip():
+                      body = body + ",\n  " + new_rule.strip()
+                  else:
+                      body = "\n  " + new_rule.strip()
+                  return existing_content[:match.start(2)] + body + existing_content[match.end(2):]
+              else:
+                  return existing_content + f"\n{array_name} = [\n  {new_rule.strip()}\n]\n"
 
           data = json.load(open('request_processing.json'))
           for action in data.get('actions', []):
@@ -72,12 +115,48 @@ jobs:
               subprocess.run(['git', 'clone', f'https://github.com/{repo}.git', repo_dir], check=True)
               subprocess.run(['git', '-C', repo_dir, 'checkout', '-b', branch], check=True)
 
-              # Overwrite files with handler output; no merging
               for change in changes:
-                  file_path = os.path.join(repo_dir, change['file'])
+                  file_rel = change['file']
+                  file_path = os.path.join(repo_dir, file_rel)
                   os.makedirs(os.path.dirname(file_path), exist_ok=True)
+                  content_to_write = change['content']
+
+                  # 1) Merge ingress/egress rules into tfvars
+                  if ('ingress_policies' in content_to_write and 'egress_policies' in content_to_write
+                      and file_rel.endswith('.tfvars')):
+                      try:
+                          with open(file_path, 'r') as f:
+                              existing = f.read()
+                      except FileNotFoundError:
+                          existing = ''
+                      if existing:
+                          new_ingress_rules = extract_rules(content_to_write, 'ingress_policies')
+                          new_egress_rules  = extract_rules(content_to_write, 'egress_policies')
+                          updated = existing
+                          for rule in new_ingress_rules:
+                              updated = append_rule(updated, 'ingress_policies', rule)
+                          for rule in new_egress_rules:
+                              updated = append_rule(updated, 'egress_policies', rule)
+                          content_to_write = updated
+
+                  # 2) Append access-level modules to existing .tf file
+                  elif (file_rel.endswith('.tf')
+                        and 'module "vpc-service-controls-access-level_' in content_to_write):
+                      try:
+                          with open(file_path, 'r') as f:
+                              existing = f.read()
+                      except FileNotFoundError:
+                          existing = ''
+                      if existing:
+                          existing_trimmed = existing.rstrip()
+                          new_trimmed = content_to_write.strip()
+                          if existing_trimmed:
+                              content_to_write = existing_trimmed + "\n\n" + new_trimmed + "\n"
+                          else:
+                              content_to_write = new_trimmed + "\n"
+
                   with open(file_path, 'w') as f:
-                      f.write(change['content'])
+                      f.write(content_to_write)
 
               subprocess.run(['git', '-C', repo_dir, 'config', 'user.email', 'bot@example.com'], check=True)
               subprocess.run(['git', '-C', repo_dir, 'config', 'user.name', 'VPC SC Bot'], check=True)
