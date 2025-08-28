@@ -46,7 +46,12 @@ jobs:
         id: read_actions
         run: |
           if [ -f request_processing.json ]; then
-            python3 -c "import json; print(json.load(open('request_processing.json')).get('actions', []))"
+            python3 - <<'PY'
+            import json
+            with open('request_processing.json') as f:
+              data = json.load(f)
+            print(data.get('actions', []))
+            PY
           else
             echo "[]"
           fi
@@ -61,6 +66,7 @@ jobs:
           import json, os, subprocess
 
           data = json.load(open('request_processing.json'))
+          pr_links = []
           for action in data.get('actions', []):
               repo      = action['repo']
               branch    = action['branch']
@@ -84,15 +90,29 @@ jobs:
               subprocess.run(['git', '-C', repo_dir, 'add', '.'], check=True)
               subprocess.run(['git', '-C', repo_dir, 'commit', '-m', commit], check=True)
               subprocess.run(['git', '-C', repo_dir, 'push', '--set-upstream', 'origin', branch], check=True)
-              subprocess.run(['gh', 'pr', 'create', '--repo', repo, '--head', branch,
-                              '--title', pr_title, '--body', pr_body], cwd=repo_dir, check=True)
+              result = subprocess.run(
+                  ['gh', 'pr', 'create', '--repo', repo, '--head', branch,
+                   '--title', pr_title, '--body', pr_body],
+                  cwd=repo_dir, check=True, capture_output=True, text=True
+              )
+              # The PR URL is usually the last line of stdout; capture it
+              pr_links.append(result.stdout.strip())
+
+          # Write PR links to a file
+          if pr_links:
+              with open('pr_links.txt', 'w') as f:
+                  for link in pr_links:
+                      f.write(link + '\n')
           PY
 
       - name: Comment on the issue with summary
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if [ -f request_processing.json ]; then
+          if [ -f pr_links.txt ]; then
+            LINKS=$(sed 's/^/- /' pr_links.txt | tr '\n' '\n')
+            gh issue comment ${{ github.event.issue.number }} --body "**VPC Service Controls request processed.**\n\nHere are the pull requests created:\n${LINKS}"
+          elif [ -f request_processing.json ]; then
             gh issue comment ${{ github.event.issue.number }} --body "$(printf '**VPC Service Controls request processed.**\n```json\n%s\n```' "$(cat request_processing.json)")"
           else
             gh issue comment ${{ github.event.issue.number }} --body "Error: request_processing.json was not generated."
