@@ -101,6 +101,9 @@ jobs:
           EOF
 
       - name: Post summary comment
+        # Only post a comment when the event was triggered by an issue. The dispatch
+        # event does not have an associated issue number, so this step is skipped.
+        if: ${{ github.event_name == 'issues' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh issue comment ${{ github.event.issue.number }} --body "$(cat summary.md)"
