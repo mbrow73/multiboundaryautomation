@@ -31,7 +31,8 @@ jobs:
           CLIENT_PAYLOAD: ${{ toJSON(github.event.client_payload) }}
         run: |
           if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
-            python3 .github/scripts/payload_to_markdown.py > issue_body.md
+            # Convert JSON payload to Markdown using our helper script
+            python3 payload_to_markdown.py > issue_body.md
           else
             echo "${{ github.event.issue.body }}" > issue_body.md
           fi
@@ -82,7 +83,7 @@ jobs:
       - name: Build human‑readable summary
         if: ${{ steps.validate.outputs.valid == 'true' && steps.read_actions.outputs.stdout != '[]' }}
         run: |
-          python3 - <<'EOF'
+          python3 - <<'EOF' > summary.md
           import json, textwrap
           data = json.load(open('request_processing.json'))
           lines = []
