@@ -3,6 +3,8 @@ name: VPC Service Controls Request
 on:
   issues:
     types: [opened, edited]
+  repository_dispatch:
+    types: [vpc-sc-request]
 
 permissions:
   contents: write
@@ -24,8 +26,16 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Write issue body to file
-        run: echo "${{ github.event.issue.body }}" > issue_body.md
+      - name: Write request to file
+        env:
+          CLIENT_PAYLOAD: ${{ toJSON(github.event.client_payload) }}
+        run: |
+          if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
+            # Convert JSON payload to Markdown using our helper script
+            python3 payload_to_markdown.py > issue_body.md
+          else
+            echo "${{ github.event.issue.body }}" > issue_body.md
+          fi
 
       - name: Install Python dependencies
         run: python -m pip install --quiet pyyaml
@@ -51,8 +61,7 @@ jobs:
 
       - name: Read actions from summary
         id: read_actions
-        run: |
-          python3 -c "import json, os, sys; data=json.load(open('request_processing.json')) if os.path.exists('request_processing.json') else {}; print(json.dumps(data.get('actions', [])))"
+        run: python3 -c "import json, os; data=json.load(open('request_processing.json')) if os.path.exists('request_processing.json') else {}; print(json.dumps(data.get('actions', [])))"
 
       - name: Label and comment if invalid
         if: ${{ steps.validate.outputs.valid != 'true' }}
@@ -61,7 +70,7 @@ jobs:
           ERRORS: ${{ steps.validate.outputs.errors }}
         run: |
           gh issue edit ${{ github.event.issue.number }} --add-label "needs fix"
-          python3 -c "import json, os; errs=json.loads(os.environ.get('ERRORS','[]')); body='**Validation Issues Detected:**\\n' + '\\n'.join('- '+e for e in errs); open('comment.md','w').write(body)"
+          python3 -c "import json, os; errs=json.loads(os.environ.get('ERRORS','[]')); body='**Validation Issues Detected:**\n' + '\n'.join('- '+e for e in errs); open('comment.md','w').write(body)"
           gh issue comment ${{ github.event.issue.number }} --body "$(cat comment.md)"
 
       - name: Apply changes and create PRs
@@ -69,13 +78,12 @@ jobs:
         env:
           CROSS_REPO_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
           GH_TOKEN: ${{ secrets.CROSS_REPO_TOKEN }}
-        run: |
-          python3 .github/scripts/apply_changes.py --summary request_processing.json
+        run: python3 .github/scripts/apply_changes.py --summary request_processing.json
 
       - name: Build human‑readable summary
         if: ${{ steps.validate.outputs.valid == 'true' && steps.read_actions.outputs.stdout != '[]' }}
         run: |
-          python3 - <<'EOF' > summary.md
+          python3 - <<'EOF'
           import json, textwrap
           data = json.load(open('request_processing.json'))
           lines = []
@@ -91,7 +99,7 @@ jobs:
                   lines.append(f"- Updated `{change['file']}`")
           print('\n'.join(lines))
           EOF
-              
+
       - name: Post summary comment
         env:
           GH_TOKEN: ${{ github.token }}
