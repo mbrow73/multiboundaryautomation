@@ -26,6 +26,11 @@ def main() -> None:
     except json.JSONDecodeError:
         # If payload isn't valid JSON, just print nothing.
         return
+    # If the payload contains a raw issue body, emit it directly.
+    issue_body = data.get("issue_body")
+    if isinstance(issue_body, str) and issue_body.strip():
+        sys.stdout.write(issue_body)
+        return
     lines: list[str] = []
     # Request ID
     reqid = data.get("reqid") or ""
