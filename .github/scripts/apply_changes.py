@@ -18,6 +18,7 @@ import subprocess
 import re
 from typing import List
 
+
 def extract_rules(tfvars_content: str, array_name: str) -> List[str]:
     """
     Extract rule objects from the specified array, scanning only between
@@ -64,6 +65,7 @@ def extract_rules(tfvars_content: str, array_name: str) -> List[str]:
             current.append(c)
     return rules
 
+
 def append_rule(existing_content: str, array_name: str, new_rule: str) -> str:
     """
     Append a new rule object to an existing array. If the array is absent,
@@ -98,6 +100,7 @@ def append_rule(existing_content: str, array_name: str, new_rule: str) -> str:
         return existing_content[:start_bracket+1] + new_body + existing_content[idx:]
     else:
         return existing_content + f"\n{array_name} = [\n  {new_rule.strip()}\n]\n"
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Apply changes from summary JSON.")
@@ -165,11 +168,20 @@ def main() -> None:
         status = subprocess.run(["git", "-C", repo_dir, "diff", "--cached", "--quiet"])
         if status.returncode != 0:
             subprocess.run(["git", "-C", repo_dir, "commit", "-m", commit_message], check=True)
-            subprocess.run(["git", "-C", repo_dir, "push", "--set-upstream", "origin", branch], check=True)
+            # Push changes to the remote branch. Use --force-with-lease to handle cases
+            # where the branch already exists on the remote (e.g., a previous run of the
+            # same request). This ensures the push succeeds even if the remote has diverged
+            # slightly, while still protecting against overwriting remote changes made by
+            # others (force-with-lease will refuse if the remote tip has moved since
+            # our last fetch).
+            subprocess.run([
+                "git", "-C", repo_dir, "push", "--force-with-lease", "--set-upstream", "origin", branch
+            ], check=True)
             subprocess.run([
                 "gh", "pr", "create", "--repo", repo, "--head", branch,
                 "--title", pr_title, "--body", pr_body
             ], cwd=repo_dir, check=True)
+
 
 if __name__ == "__main__":
     main()
