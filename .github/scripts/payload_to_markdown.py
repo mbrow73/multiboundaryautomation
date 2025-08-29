@@ -31,7 +31,246 @@ def main() -> None:
     if isinstance(issue_body, str) and issue_body.strip():
         sys.stdout.write(issue_body)
         return
+
     lines: list[str] = []
+    # Support simple rule definitions akin to the issue template. If 'rules' is
+    # present and is a list of dicts, convert each rule into a Markdown block.
+    rules = data.get("rules")
+    if isinstance(rules, list) and rules:
+        # Optional top-level request ID
+        reqid = data.get("reqid") or ""
+        if reqid:
+            lines.append(f"Request ID: {reqid}")
+        tlm = data.get("tlm_id") or ""
+        justification = data.get("justification") or ""
+        for rule in rules:
+            # Perimeter(s)
+            perims = rule.get("perimeter_name") or rule.get("perimeters") or ""
+            perim_list: list[str] = []
+            if isinstance(perims, str):
+                perim_list = [p.strip() for p in perims.split(",") if p.strip()]
+            elif isinstance(perims, list):
+                perim_list = [str(p).strip() for p in perims if str(p).strip()]
+            if perim_list:
+                lines.append("")
+                lines.append("Perimeter Name(s)")
+                for p in perim_list:
+                    lines.append(p)
+            # Direction
+            direction = (rule.get("direction") or "").upper()
+            if direction:
+                lines.append("")
+                lines.append("Direction")
+                lines.append(direction)
+            # Services
+            services_field = rule.get("services") or ""
+            services_list: list[str] = []
+            if isinstance(services_field, str):
+                services_list = [s.strip() for s in services_field.split(",") if s.strip()]
+            elif isinstance(services_field, list):
+                services_list = [str(s).strip() for s in services_field if str(s).strip()]
+            if services_list:
+                lines.append("")
+                lines.append("Services")
+                lines.append(", ".join(services_list))
+            # Methods (optional)
+            methods_field = rule.get("methods") or ""
+            method_lines: list[str] = []
+            if isinstance(methods_field, str) and methods_field.strip():
+                # Expect format: svc1: method1,method2; svc2: method
+                parts = [p.strip() for p in methods_field.split(";") if p.strip()]
+                for part in parts:
+                    method_lines.append(part)
+            elif isinstance(methods_field, dict):
+                for svc, mlist in methods_field.items():
+                    if isinstance(mlist, list) and mlist:
+                        method_lines.append(f"{svc}: " + ", ".join(str(m) for m in mlist))
+            if method_lines:
+                lines.append("")
+                lines.append("Methods")
+                lines.extend(method_lines)
+            # Permissions (optional)
+            perms_field = rule.get("permissions") or ""
+            perm_lines: list[str] = []
+            if isinstance(perms_field, str) and perms_field.strip():
+                parts = [p.strip() for p in perms_field.split(";") if p.strip()]
+                for part in parts:
+                    perm_lines.append(part)
+            elif isinstance(perms_field, dict):
+                for svc, plist in perms_field.items():
+                    if isinstance(plist, list) and plist:
+                        perm_lines.append(f"{svc}: " + ", ".join(str(p) for p in plist))
+            if perm_lines:
+                lines.append("")
+                lines.append("Permissions")
+                lines.extend(perm_lines)
+            # From / To
+            from_field = rule.get("from") or ""
+            from_list: list[str] = []
+            if isinstance(from_field, str):
+                from_list = [f.strip() for f in from_field.split(",") if f.strip()]
+            elif isinstance(from_field, list):
+                from_list = [str(f).strip() for f in from_field if str(f).strip()]
+            if from_list:
+                lines.append("")
+                lines.append("Source / From")
+                for f in from_list:
+                    lines.append(f)
+            to_field = rule.get("to") or ""
+            to_list: list[str] = []
+            if isinstance(to_field, str):
+                to_list = [t.strip() for t in to_field.split(",") if t.strip()]
+            elif isinstance(to_field, list):
+                to_list = [str(t).strip() for t in to_field if str(t).strip()]
+            if to_list:
+                lines.append("")
+                lines.append("Destination / To")
+                for t in to_list:
+                    lines.append(t)
+            # Identities
+            id_field = rule.get("identities") or ""
+            id_list: list[str] = []
+            if isinstance(id_field, str):
+                id_list = [i.strip() for i in id_field.split(",") if i.strip()]
+            elif isinstance(id_field, list):
+                id_list = [str(i).strip() for i in id_field if str(i).strip()]
+            if id_list:
+                lines.append("")
+                lines.append("Identities")
+                lines.append(", ".join(id_list))
+        # Append optional TLM-ID and justification
+        if tlm:
+            lines.append("")
+            lines.append("TLM-ID (if applicable)")
+            lines.append(str(tlm))
+        if justification:
+            lines.append("")
+            lines.append("Justification")
+            lines.append(str(justification))
+        sys.stdout.write("\n".join(lines))
+        return
+
+    # If no 'rules' list was provided, look for a simplified single-rule schema.
+    # This allows requesters to specify the same fields as the issue template
+    # without embedding arrays. Keys such as 'perimeters' (string), 'services',
+    # 'methods', 'permissions', 'resources', 'to', 'from' and 'identities'
+    # may be provided at the top level of the payload. These are converted
+    # into the same Markdown sections that the handler expects.
+    simple_fields = any(k in data for k in ["services", "methods", "permissions", "resources", "to", "from", "identities"])
+    if simple_fields:
+        # Request ID
+        reqid = data.get("reqid") or ""
+        if reqid:
+            lines.append(f"Request ID: {reqid}")
+        # Perimeter names: accept comma separated string or list
+        perims = data.get("perimeters") or data.get("perimeter") or ""
+        perim_list: list[str] = []
+        if isinstance(perims, str):
+            perim_list = [p.strip() for p in perims.split(",") if p.strip()]
+        elif isinstance(perims, list):
+            perim_list = [str(p).strip() for p in perims if str(p).strip()]
+        if perim_list:
+            lines.append("")
+            lines.append("Perimeter Name(s)")
+            for p in perim_list:
+                lines.append(p)
+        # Direction
+        direction = (data.get("direction") or "").upper()
+        if direction:
+            lines.append("")
+            lines.append("Direction")
+            lines.append(direction)
+        # Services
+        services_field = data.get("services") or ""
+        services_list: list[str] = []
+        if isinstance(services_field, str):
+            services_list = [s.strip() for s in services_field.split(",") if s.strip()]
+        elif isinstance(services_field, list):
+            services_list = [str(s).strip() for s in services_field if str(s).strip()]
+        if services_list:
+            lines.append("")
+            lines.append("Services")
+            lines.append(", ".join(services_list))
+        # Methods (optional) - allow semicolon separated list of service: methods
+        methods_field = data.get("methods") or ""
+        method_lines: list[str] = []
+        if isinstance(methods_field, str) and methods_field.strip():
+            parts = [p.strip() for p in methods_field.split(";") if p.strip()]
+            for part in parts:
+                method_lines.append(part)
+        elif isinstance(methods_field, dict):
+            for svc, mlist in methods_field.items():
+                if isinstance(mlist, list) and mlist:
+                    method_lines.append(f"{svc}: " + ", ".join(str(m) for m in mlist))
+        if method_lines:
+            lines.append("")
+            lines.append("Methods")
+            lines.extend(method_lines)
+        # Permissions (optional)
+        perms_field = data.get("permissions") or ""
+        perm_lines: list[str] = []
+        if isinstance(perms_field, str) and perms_field.strip():
+            parts = [p.strip() for p in perms_field.split(";") if p.strip()]
+            for part in parts:
+                perm_lines.append(part)
+        elif isinstance(perms_field, dict):
+            for svc, plist in perms_field.items():
+                if isinstance(plist, list) and plist:
+                    perm_lines.append(f"{svc}: " + ", ".join(str(p) for p in plist))
+        if perm_lines:
+            lines.append("")
+            lines.append("Permissions")
+            lines.extend(perm_lines)
+        # Source / From and Destination / To
+        # Accept 'from' or 'source' or 'from_resources' for ingress, 'to' or 'destination' or 'resources' for egress
+        from_field = data.get("from") or data.get("source") or ""
+        to_field = data.get("to") or data.get("destination") or data.get("resources") or ""
+        from_list: list[str] = []
+        to_list: list[str] = []
+        if isinstance(from_field, str):
+            from_list = [f.strip() for f in from_field.split(",") if f.strip()]
+        elif isinstance(from_field, list):
+            from_list = [str(f).strip() for f in from_field if str(f).strip()]
+        if isinstance(to_field, str):
+            to_list = [t.strip() for t in to_field.split(",") if t.strip()]
+        elif isinstance(to_field, list):
+            to_list = [str(t).strip() for t in to_field if str(t).strip()]
+        if from_list and direction == "INGRESS":
+            lines.append("")
+            lines.append("Source / From")
+            for f in from_list:
+                lines.append(f)
+        if to_list and direction == "EGRESS":
+            lines.append("")
+            lines.append("Destination / To")
+            for t in to_list:
+                lines.append(t)
+        # Identities
+        id_field = data.get("identities") or ""
+        id_list: list[str] = []
+        if isinstance(id_field, str):
+            id_list = [i.strip() for i in id_field.split(",") if i.strip()]
+        elif isinstance(id_field, list):
+            id_list = [str(i).strip() for i in id_field if str(i).strip()]
+        if id_list:
+            lines.append("")
+            lines.append("Identities")
+            lines.append(", ".join(id_list))
+        # TLM-ID and Justification optional
+        tlm = data.get("tlm_id") or ""
+        justification = data.get("justification") or ""
+        if tlm:
+            lines.append("")
+            lines.append("TLM-ID (if applicable)")
+            lines.append(str(tlm))
+        if justification:
+            lines.append("")
+            lines.append("Justification")
+            lines.append(str(justification))
+        sys.stdout.write("\n".join(lines))
+        return
+
+    # Default behaviour: old schema with egress_policies/ingress_policies
     # Request ID
     reqid = data.get("reqid") or ""
     if reqid:
@@ -106,7 +345,6 @@ def main() -> None:
             lines.append(label)
             for r in resources:
                 lines.append(str(r))
-    # Output the assembled lines
     sys.stdout.write("\n".join(lines))
 
 if __name__ == "__main__":
