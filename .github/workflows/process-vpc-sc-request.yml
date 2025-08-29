@@ -72,12 +72,27 @@ jobs:
         run: |
           python3 .github/scripts/apply_changes.py --summary request_processing.json
 
-      - name: Comment with summary
+      - name: Build human‑readable summary
+        if: ${{ steps.validate.outputs.valid == 'true' && steps.read_actions.outputs.stdout != '[]' }}
+        run: |
+          python3 - <<'EOF' > summary.md
+          import json, textwrap
+          data = json.load(open('request_processing.json'))
+          lines = []
+          lines.append(f"### VPC Service Controls request `{data.get('reqid')}` processed")
+          for action in data.get('actions', []):
+              lines.append("")
+              lines.append(f"**Repository:** `{action['repo']}`")
+              lines.append(f"**Branch:** `{action['branch']}`")
+              lines.append(f"**Commit message:** {action['commit_message']}")
+              lines.append(f"**PR title:** {action['pr_title']}")
+              lines.append(f"**PR body:** {action['pr_body']}")
+              for change in action.get('changes', []):
+                  lines.append(f"- Updated `{change['file']}`")
+          print('\n'.join(lines))
+          EOF
+              
+      - name: Post summary comment
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          if [ -f request_processing.json ]; then
-            gh issue comment ${{ github.event.issue.number }} --body "$(printf '**VPC Service Controls request processed.**\\n```json\\n%s\\n```' "$(cat request_processing.json)")"
-          else
-            gh issue comment ${{ github.event.issue.number }} --body "Error: request_processing.json was not generated."
-          fi
+        run: gh issue comment ${{ github.event.issue.number }} --body "$(cat summary.md)"
