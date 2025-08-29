@@ -32,7 +32,7 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "repository_dispatch" ]; then
             # Convert JSON payload to Markdown using our helper script
-            python3 payload_to_markdown.py > issue_body.md
+            python3 .github/scripts/payload_to_markdown.py > issue_body.md
           else
             echo "${{ github.event.issue.body }}" > issue_body.md
           fi
