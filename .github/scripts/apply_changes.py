@@ -177,6 +177,30 @@ def main() -> None:
             subprocess.run([
                 "git", "-C", repo_dir, "push", "--force-with-lease", "--set-upstream", "origin", branch
             ], check=True)
+            # Check if a pull request already exists for this branch. If it does, skip
+            # creating a new PR to avoid errors from the GitHub CLI. We use gh pr list
+            # with --head to find any existing PRs for this branch.
+            try:
+                # Check for existing PRs on this branch. We request the PR number so we can close it.
+                pr_check = subprocess.run([
+                    "gh", "pr", "list", "--repo", repo, "--head", branch, "--json", "number"
+                ], cwd=repo_dir, capture_output=True, text=True, check=True)
+                existing_prs = json.loads(pr_check.stdout or "[]")
+            except Exception:
+                existing_prs = []
+            # If a PR already exists for this branch, close it before creating a new one
+            if existing_prs:
+                for pr in existing_prs:
+                    pr_number = pr.get("number")
+                    if pr_number:
+                        try:
+                            subprocess.run([
+                                "gh", "pr", "close", str(pr_number), "--repo", repo
+                            ], cwd=repo_dir, check=True)
+                        except subprocess.CalledProcessError as e:
+                            # Ignore errors closing the PR, but log
+                            print(f"Failed to close existing PR #{pr_number} for {branch}: {e}")
+            # Always create a new PR after closing (or if none existed)
             subprocess.run([
                 "gh", "pr", "create", "--repo", repo, "--head", branch,
                 "--title", pr_title, "--body", pr_body
