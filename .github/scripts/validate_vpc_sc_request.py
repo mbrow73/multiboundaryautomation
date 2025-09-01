@@ -1556,13 +1556,15 @@ def validate_rules(rules: List[Dict[str, Any]], router: Dict[str, Any]) -> List[
             if p not in router_perims:
                 errors.append(f"Perimeter '{p}' does not exist in router.yml.")
 
-        # 2. Project ID length
+        # 2. Project ID format
+        # Accept any numeric project ID (not limited to 10 digits). Previously this
+        # required exactly 10 digits, but Google Cloud project numbers can vary in length.
         for res in rule.get("sources", []) + rule.get("destinations", []):
             if res.startswith("projects/"):
                 proj_id = res.split("/", 1)[-1]
-                if not re.fullmatch(r"\d{10}", proj_id):
+                if not re.fullmatch(r"\d+", proj_id):
                     errors.append(
-                        f"Resource '{res}' must be of form projects/<10-digit ID>."
+                        f"Resource '{res}' must be of form projects/<numeric project ID>."
                     )
 
         # 3. IP format and TLM requirement on ingress
