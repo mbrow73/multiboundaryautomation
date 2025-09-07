@@ -35,17 +35,34 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
             if perim and perim != "(s)":
                 perimeters.append(perim)
 
-    # Capture TLM-ID or fallback to third-party name
-    tlm_match = re.search(r"TLM[-\u2011\u2012\u2013\u2014]?ID.*?:\s*(.+)", issue_text, re.IGNORECASE)
-    if not tlm_match:
-        tlm_match = re.search(r"TLM[-\u2011\u2012\u2013\u2014]?ID.*?\n+([^\n]*)", issue_text, re.IGNORECASE)
-    third_party_match = re.search(r"Third\s*-?Party\s*Name.*?:\s*(.+)", issue_text, re.IGNORECASE)
-    if tlm_match:
-        tlm_id = tlm_match.group(1).strip()
-    elif third_party_match:
-        tlm_id = third_party_match.group(1).strip()
-    else:
-        tlm_id = ""
+    # Capture the TLM-ID or fallback to third-party name.  We search the
+    # issue text line-by-line, handling both Markdown headings (lines starting
+    # with `###`) and plain text headings.  We allow optional spaces or
+    # hyphens between "TLM" and "ID", and treat values either on the same
+    # line after a colon or on the next non-empty line.
+    tlm_id = ""
+    lines = issue_text.splitlines()
+    for idx, raw_line in enumerate(lines):
+        # Strip leading '#' (markdown headings) and whitespace for matching
+        line = raw_line.lstrip('#').strip()
+        # Detect TLM ID heading
+        if re.match(r"(?i)^TLM\s*[-\u2011\u2012\u2013\u2014]?\s*ID\b", line):
+            # If the value appears after a colon on the same line, capture it
+            parts = line.split(":", 1)
+            if len(parts) > 1 and parts[1].strip():
+                tlm_id = parts[1].strip()
+                break
+            # Otherwise, look ahead for the next non-empty line as the value
+            for nl in lines[idx + 1:]:
+                if nl.strip():
+                    tlm_id = nl.strip()
+                    break
+            break
+    # If no TLM ID is provided, check for a Third-Party Name to use as the name
+    if not tlm_id:
+        third_party_match = re.search(r"Third\s*-?Party\s*Name.*?:\s*(.+)", issue_text, re.IGNORECASE)
+        if third_party_match:
+            tlm_id = third_party_match.group(1).strip()
 
     justification = ""
     # Extract the Justification section. Instead of grabbing everything until
@@ -149,13 +166,13 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
                         break
                 if nxt is None:
                     break
-                heading_pats = [r"^(TLM[-\u2011\u2012\u2013\u2014]?ID)", r"^Third\s*-?Party", r"^Perimeter\s+Name", r"^Direction", r"^Identities", r"^Source\s*/?\s*From", r"^Destination\s*/?\s*To", r"^Services", r"^Methods", r"^Permissions"]
+                heading_pats = [r"^TLM\s*[-\u2011\u2012\u2013\u2014]?\s*ID", r"^Third\s*-?Party", r"^Perimeter\s+Name", r"^Direction", r"^Identities", r"^Source\s*/?\s*From", r"^Destination\s*/?\s*To", r"^Services", r"^Methods", r"^Permissions"]
                 if any(re.match(pat, nxt, re.IGNORECASE) for pat in heading_pats):
                     break
                 else:
                     continue
             # Stop if current line is itself a heading
-            heading_pats2 = [r"^(TLM[-\u2011\u2012\u2013\u2014]?ID)", r"^Third\s*-?Party", r"^Perimeter\s+Name", r"^Direction", r"^Identities", r"^Source\s*/?\s*From", r"^Destination\s*/?\s*To", r"^Services", r"^Methods", r"^Permissions"]
+            heading_pats2 = [r"^TLM\s*[-\u2011\u2012\u2013\u2014]?\s*ID", r"^Third\s*-?Party", r"^Perimeter\s+Name", r"^Direction", r"^Identities", r"^Source\s*/?\s*From", r"^Destination\s*/?\s*To", r"^Services", r"^Methods", r"^Permissions"]
             if any(re.match(pat, stripped_line, re.IGNORECASE) for pat in heading_pats2):
                 break
             # Skip example or placeholder lines
