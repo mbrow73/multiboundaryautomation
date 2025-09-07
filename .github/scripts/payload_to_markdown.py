@@ -146,7 +146,9 @@ def main() -> None:
         if justification:
             lines.append("")
             lines.append("Justification")
-            lines.append(str(justification))
+            # Support multi-line justification: emit each line separately
+            for jl in str(justification).splitlines():
+                lines.append(jl)
         sys.stdout.write("\n".join(lines))
         return
 
@@ -266,7 +268,9 @@ def main() -> None:
         if justification:
             lines.append("")
             lines.append("Justification")
-            lines.append(str(justification))
+            # Support multi-line justification: emit each line separately
+            for jl in str(justification).splitlines():
+                lines.append(jl)
         sys.stdout.write("\n".join(lines))
         return
 

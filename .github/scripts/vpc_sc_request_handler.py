@@ -14,8 +14,15 @@ from typing import Any, Dict, List
 
 import yaml  # type: ignore
 
-
 def parse_issue_body(issue_text: str) -> Dict[str, Any]:
+    """Parse the body of a VPC-SC request issue and return a structured dict.
+
+    The incoming issue is expected to follow the VPC-SC request template: it may
+    contain multiple perimeters, services, methods/permissions, identities and a
+    justification.  This function extracts those fields, normalises identities and
+    returns a dictionary with request ID, perimeter names, TLM-ID, justification
+    text and a list of rule blocks.
+    """
     clean_text = re.sub(r"[\*`]+", "", issue_text)
     reqid_match = re.search(r"Request ID.*?:\s*([A-Za-z0-9_-]+)", clean_text, re.IGNORECASE)
     reqid = reqid_match.group(1).strip() if reqid_match else f"REQ-{uuid.uuid4().hex[:8]}"
@@ -41,11 +48,14 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
         tlm_id = ""
 
     justification = ""
-    just_match = re.search(r"Justification\s*\n+([^\n]+)", issue_text, re.IGNORECASE)
+    # Capture the full justification block: everything after the "Justification" heading
+    # up to the next heading (a line starting with `#`) or the end of the text.  This
+    # allows multi-line justifications.  Remove empty lines and placeholder lines starting with `**`.
+    just_match = re.search(r"(?i)Justification\s*?\n+([\s\S]*?)(?:\n\s*#+\s|\Z)", issue_text)
     if just_match:
         candidate = just_match.group(1).strip()
-        if candidate and not candidate.startswith("**"):
-            justification = candidate
+        lines = [ln.strip() for ln in candidate.splitlines() if ln.strip() and not ln.strip().startswith("**")]
+        justification = "\n".join(lines)
 
     rules: List[Dict[str, Any]] = []
     rule_pattern = re.compile(
@@ -82,9 +92,9 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
             matched_heading = None
             for h in headings:
                 h_norm = (h.replace("\u2011", "-")
-                          .replace("\u2012", "-")
-                          .replace("\u2013", "-")
-                          .replace("\u2014", "-"))
+                           .replace("\u2012", "-")
+                           .replace("\u2013", "-")
+                           .replace("\u2014", "-"))
                 if re.match(rf"^{re.escape(h_norm)}", normalized, re.IGNORECASE):
                     matched_heading = h
                     break
@@ -101,6 +111,7 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
                 current_heading = None
                 continue
             if current_heading:
+                # Skip example bullets or placeholders
                 if stripped.startswith("-") or re.search(r"\bFor\b|\bExample\b", stripped, re.IGNORECASE):
                     continue
                 values[current_heading].append(stripped)
@@ -115,7 +126,7 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
         if not perim_vals:
             perim_vals = perimeters.copy()
 
-        def split_values(key):
+        def split_values(key: str) -> List[str]:
             result: List[str] = []
             for val in values.get(key, []):
                 for part in re.split(r",", val):
@@ -183,6 +194,14 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
 
 
 def build_actions(parsed: Dict[str, Any], router: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Generate a list of actions (perimeter updates) from parsed issue data.
+
+    Each rule in the parsed input is converted into ingress and/or egress policy
+    structures.  These are then grouped per perimeter and converted to Terraform
+    HCL with embedded justification comments.  The returned list contains one
+    element per perimeter, specifying repository, branch, commit message, PR title
+    and a list of file changes.
+    """
     actions: List[Dict[str, Any]] = []
     reqid = parsed.get("reqid") or f"REQ-{uuid.uuid4().hex[:8]}"
     justification = parsed.get("justification") or ""
@@ -193,6 +212,7 @@ def build_actions(parsed: Dict[str, Any], router: Dict[str, Any]) -> List[Dict[s
     def safe_name(s: str) -> str:
         return re.sub(r"[^A-Za-z0-9]", "-", s.lower())
 
+    # Build a map of perimeters to their accumulated ingress/egress policies and access levels
     for idx, rule in enumerate(rules):
         direction = rule.get("direction", "").upper()
         services  = rule.get("services", [])
@@ -236,7 +256,7 @@ def build_actions(parsed: Dict[str, Any], router: Dict[str, Any]) -> List[Dict[s
                     access_levels_list.append(level_name)
                     module_lines = [
                         f'module "vpc-service-controls-access-level_{level_name}" {{',
-                        '  source  = "tfe.<domain>/<namespace>/vpc-service-controls/google//modules/access_level"',
+                        '  source  = "tfe. / /vpc-service-controls/google//modules/access_level"',
                         '  version = "0.0.4"',
                         '  policy  = var.policy',
                         f'  name    = "{level_name}"',
@@ -296,6 +316,7 @@ def build_actions(parsed: Dict[str, Any], router: Dict[str, Any]) -> List[Dict[s
             return "\n".join(lines)
         return json.dumps(value)
 
+    # Convert the aggregated per-perimeter data into file changes and PR metadata
     for perim, data in perim_map.items():
         perim_info = router.get("perimeters", {}).get(perim)
         if not perim_info:
@@ -309,29 +330,32 @@ def build_actions(parsed: Dict[str, Any], router: Dict[str, Any]) -> List[Dict[s
         pr_body = f"This pull request applies the VPC Service Controls request `{reqid}` to perimeter `{perim}`."
 
         tfvars_lines: List[str] = []
-        # Ingress policies with justification comments
+        # Ingress policies with justification comments inserted inside the rule
         if data["ingress_policies"]:
             tfvars_lines.append("ingress_policies = [")
             for pol in data["ingress_policies"]:
-                if justification:
-                    for line in justification.split("\n"):
-                        tfvars_lines.append("  # " + line)
                 hcl_pol = to_hcl(pol, indent=1)
-                tfvars_lines.extend(["  " + ln for ln in hcl_pol.split("\n")])
+                lines = hcl_pol.split("\n")
+                if justification:
+                    comment_lines = ["  # " + ln for ln in justification.split("\n")]
+                    # Insert comments immediately after the opening brace
+                    lines = [lines[0]] + comment_lines + lines[1:]
+                tfvars_lines.extend(["  " + ln for ln in lines])
                 tfvars_lines[-1] += ","
             tfvars_lines.append("]")
         else:
             tfvars_lines.append("ingress_policies = []")
 
-        # Egress policies with justification comments
+        # Egress policies with justification comments inserted inside the rule
         if data["egress_policies"]:
             tfvars_lines.append("egress_policies  = [")
             for pol in data["egress_policies"]:
-                if justification:
-                    for line in justification.split("\n"):
-                        tfvars_lines.append("  # " + line)
                 hcl_pol = to_hcl(pol, indent=1)
-                tfvars_lines.extend(["  " + ln for ln in hcl_pol.split("\n")])
+                lines = hcl_pol.split("\n")
+                if justification:
+                    comment_lines = ["  # " + ln for ln in justification.split("\n")]
+                    lines = [lines[0]] + comment_lines + lines[1:]
+                tfvars_lines.extend(["  " + ln for ln in lines])
                 tfvars_lines[-1] += ","
             tfvars_lines.append("]")
         else:
