@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-VPC Service Controls request handler with TLM-ID and per-service methods/permissions.
-Assumes the issue template lists services once, then specifies service-specific
-methods and permissions using "service: method1, method2" syntax.
+VPC Service Controls request handler with TLM-ID, per-service methods/permissions,
+and justification comments. Parses a GitHub issue (in Markdown) into rule structures,
+normalises identities, creates access levels via a module, and adds justification
+comments above each rule in the generated HCL.
 """
 
 import argparse
@@ -100,7 +101,6 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
                 current_heading = None
                 continue
             if current_heading:
-                # Skip examples or bullet markers
                 if stripped.startswith("-") or re.search(r"\bFor\b|\bExample\b", stripped, re.IGNORECASE):
                     continue
                 values[current_heading].append(stripped)
@@ -208,7 +208,6 @@ def build_actions(parsed: Dict[str, Any], router: Dict[str, Any]) -> List[Dict[s
         for svc in services:
             svc_methods = service_methods.get(svc)
             svc_perms   = service_permissions.get(svc)
-            # If no methods specified, use ["*"] as wildcard
             operations[svc] = {
                 "methods": svc_methods if svc_methods else ["*"],
                 "permissions": svc_perms if svc_perms else [],
@@ -237,7 +236,7 @@ def build_actions(parsed: Dict[str, Any], router: Dict[str, Any]) -> List[Dict[s
                     access_levels_list.append(level_name)
                     module_lines = [
                         f'module "vpc-service-controls-access-level_{level_name}" {{',
-                        '  source  = "tfe. / /vpc-service-controls/google//modules/access_level"',
+                        '  source  = "tfe.<domain>/<namespace>/vpc-service-controls/google//modules/access_level"',
                         '  version = "0.0.4"',
                         '  policy  = var.policy',
                         f'  name    = "{level_name}"',
@@ -310,8 +309,34 @@ def build_actions(parsed: Dict[str, Any], router: Dict[str, Any]) -> List[Dict[s
         pr_body = f"This pull request applies the VPC Service Controls request `{reqid}` to perimeter `{perim}`."
 
         tfvars_lines: List[str] = []
-        tfvars_lines.append("ingress_policies = " + to_hcl(data["ingress_policies"], indent=0))
-        tfvars_lines.append("egress_policies  = " + to_hcl(data["egress_policies"], indent=0))
+        # Ingress policies with justification comments
+        if data["ingress_policies"]:
+            tfvars_lines.append("ingress_policies = [")
+            for pol in data["ingress_policies"]:
+                if justification:
+                    for line in justification.split("\n"):
+                        tfvars_lines.append("  # " + line)
+                hcl_pol = to_hcl(pol, indent=1)
+                tfvars_lines.extend(["  " + ln for ln in hcl_pol.split("\n")])
+                tfvars_lines[-1] += ","
+            tfvars_lines.append("]")
+        else:
+            tfvars_lines.append("ingress_policies = []")
+
+        # Egress policies with justification comments
+        if data["egress_policies"]:
+            tfvars_lines.append("egress_policies  = [")
+            for pol in data["egress_policies"]:
+                if justification:
+                    for line in justification.split("\n"):
+                        tfvars_lines.append("  # " + line)
+                hcl_pol = to_hcl(pol, indent=1)
+                tfvars_lines.extend(["  " + ln for ln hcl_pol.split("\n")])
+                tfvars_lines[-1] += ","
+            tfvars_lines.append("]")
+        else:
+            tfvars_lines.append("egress_policies  = []")
+
         tfvars_content = "\n".join(tfvars_lines) + "\n"
         access_content = "\n\n".join(data["access_levels"]) + ("\n" if data["access_levels"] else "")
         changes: List[Dict[str, Any]] = []
