@@ -111,8 +111,15 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
         ]
         if any(re.match(pat, stripped, re.IGNORECASE) for pat in heading_patterns):
             break
-        # Skip placeholder lines (e.g., starting with '**' or markdown bullets)
-        if stripped.startswith("**") or re.search(r"\bFor\b|\bExample\b", stripped, re.IGNORECASE):
+        # Skip placeholder lines (e.g., bold placeholders, bullets, or lines that begin with 'for example' or 'example')
+        if stripped.startswith("**"):
+            continue
+        # Skip markdown bullets which often denote example lists
+        if stripped.lstrip().startswith(('-','*')):
+            continue
+        # Skip lines that start with "For example" or "Example" (case-insensitive) to avoid capturing template hints
+        lower = stripped.lower()
+        if lower.startswith('for example') or lower.startswith('for ') or lower.startswith('example'):
             continue
         just_lines.append(stripped)
     if just_lines:
