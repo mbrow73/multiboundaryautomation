@@ -125,6 +125,54 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
     if just_lines:
         justification = "\n".join(just_lines)
 
+    # Override the justification using an improved extraction that supports markdown headings
+    # and avoids capturing other sections like TLM-ID or Third-Party Name. This helper
+    # scans lines after a "Justification" heading (ignoring leading '#') and stops
+    # when it encounters another heading or blank line followed by a heading.
+    def _extract_justification(text: str) -> str:
+        lines_local = text.splitlines()
+        js = False
+        jlines: list[str] = []
+        for idx, l in enumerate(lines_local):
+            nohash = l.lstrip('#').strip()
+            if not js:
+                if re.match(r"(?i)^Justification\b", nohash):
+                    js = True
+                continue
+            stripped_line = nohash
+            if not stripped_line:
+                nxt = None
+                for nl in lines_local[idx+1:]:
+                    cand = nl.lstrip('#').strip()
+                    if cand:
+                        nxt = cand
+                        break
+                if nxt is None:
+                    break
+                heading_pats = [r"^(TLM[-\u2011\u2012\u2013\u2014]?ID)", r"^Third\s*-?Party", r"^Perimeter\s+Name", r"^Direction", r"^Identities", r"^Source\s*/?\s*From", r"^Destination\s*/?\s*To", r"^Services", r"^Methods", r"^Permissions"]
+                if any(re.match(pat, nxt, re.IGNORECASE) for pat in heading_pats):
+                    break
+                else:
+                    continue
+            # Stop if current line is itself a heading
+            heading_pats2 = [r"^(TLM[-\u2011\u2012\u2013\u2014]?ID)", r"^Third\s*-?Party", r"^Perimeter\s+Name", r"^Direction", r"^Identities", r"^Source\s*/?\s*From", r"^Destination\s*/?\s*To", r"^Services", r"^Methods", r"^Permissions"]
+            if any(re.match(pat, stripped_line, re.IGNORECASE) for pat in heading_pats2):
+                break
+            # Skip example or placeholder lines
+            if stripped_line.startswith("**"):
+                continue
+            if stripped_line.lstrip().startswith(('-', '*')):
+                continue
+            low = stripped_line.lower()
+            if low.startswith('for example') or low.startswith('for ') or low.startswith('example'):
+                continue
+            jlines.append(stripped_line)
+        return "\n".join(jlines)
+
+    improved_just = _extract_justification(issue_text)
+    if improved_just:
+        justification = improved_just
+
     rules: List[Dict[str, Any]] = []
     rule_pattern = re.compile(
         r"Perimeter Name\(s\)?[^\n]*\n.*?(?=(?:\n\s*Perimeter Name\(s\)?|\Z))",
