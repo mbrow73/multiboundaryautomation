@@ -331,7 +331,7 @@ def build_actions(parsed: Dict[str, Any], router: Dict[str, Any]) -> List[Dict[s
                     for line in justification.split("\n"):
                         tfvars_lines.append("  # " + line)
                 hcl_pol = to_hcl(pol, indent=1)
-                tfvars_lines.extend(["  " + ln for ln hcl_pol.split("\n")])
+                tfvars_lines.extend(["  " + ln for ln in hcl_pol.split("\n")])
                 tfvars_lines[-1] += ","
             tfvars_lines.append("]")
         else:
