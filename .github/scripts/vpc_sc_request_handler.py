@@ -48,14 +48,75 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
         tlm_id = ""
 
     justification = ""
-    # Capture the full justification block: everything after the "Justification" heading
-    # up to the next heading (a line starting with `#`) or the end of the text.  This
-    # allows multi-line justifications.  Remove empty lines and placeholder lines starting with `**`.
-    just_match = re.search(r"(?i)Justification\s*?\n+([\s\S]*?)(?:\n\s*#+\s|\Z)", issue_text)
-    if just_match:
-        candidate = just_match.group(1).strip()
-        lines = [ln.strip() for ln in candidate.splitlines() if ln.strip() and not ln.strip().startswith("**")]
-        justification = "\n".join(lines)
+    # Extract the Justification section. Instead of grabbing everything until
+    # the end of the file (which can swallow other fields like the TLM-ID),
+    # iterate through lines after the "Justification" heading and stop when
+    # encountering another heading or a blank line followed by a heading.
+    just_started = False
+    just_lines: List[str] = []
+    for i, line in enumerate(issue_text.splitlines()):
+        if not just_started:
+            # Look for the line that starts the justification section. It can be
+            # "Justification" or "Justification:" (case-insensitive).
+            if re.match(r"(?i)^\s*Justification\b", line):
+                just_started = True
+            continue
+        # Once justification has started, determine whether to stop collecting lines.
+        stripped = line.strip()
+        # Stop if we hit another known heading (e.g., TLM-ID, Third-Party Name, Perimeter, Direction, Identities, etc.).
+        if not stripped:
+            # Allow a single blank line within the justification, but if we've
+            # already captured some lines and the next non-empty line is a heading, we break.
+            # Peek at the next non-empty line to decide.
+            # If there is no next non-empty line, we break.
+            next_lines = issue_text.splitlines()[i+1:]
+            next_non_empty = None
+            for nl in next_lines:
+                if nl.strip():
+                    next_non_empty = nl.strip()
+                    break
+            if next_non_empty is None:
+                break
+            # Define headings that terminate the justification section.
+            heading_patterns = [
+                r"^(TLM[-\u2011\u2012\u2013\u2014]?ID)",
+                r"^Third\s*-?Party",
+                r"^Perimeter\s+Name",
+                r"^Direction",
+                r"^Identities",
+                r"^Source\s*/?\s*From",
+                r"^Destination\s*/?\s*To",
+                r"^Services",
+                r"^Methods",
+                r"^Permissions",
+            ]
+            is_heading = any(re.match(pat, next_non_empty, re.IGNORECASE) for pat in heading_patterns)
+            if is_heading:
+                break
+            else:
+                # skip this blank line within justification
+                continue
+        # If the line itself looks like a heading, stop collecting.
+        heading_patterns = [
+            r"^(TLM[-\u2011\u2012\u2013\u2014]?ID)",
+            r"^Third\s*-?Party",
+            r"^Perimeter\s+Name",
+            r"^Direction",
+            r"^Identities",
+            r"^Source\s*/?\s*From",
+            r"^Destination\s*/?\s*To",
+            r"^Services",
+            r"^Methods",
+            r"^Permissions",
+        ]
+        if any(re.match(pat, stripped, re.IGNORECASE) for pat in heading_patterns):
+            break
+        # Skip placeholder lines (e.g., starting with '**' or markdown bullets)
+        if stripped.startswith("**") or re.search(r"\bFor\b|\bExample\b", stripped, re.IGNORECASE):
+            continue
+        just_lines.append(stripped)
+    if just_lines:
+        justification = "\n".join(just_lines)
 
     rules: List[Dict[str, Any]] = []
     rule_pattern = re.compile(
