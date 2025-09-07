@@ -58,7 +58,20 @@ def parse_issue_body(issue_text: str) -> Dict[str, Any]:
                     tlm_id = nl.strip()
                     break
             break
-    # If no TLM ID is provided, check for a Third-Party Name to use as the name
+    # If the captured TLM ID looks like a placeholder (e.g. consists only
+    # of non-alphanumeric characters or contains the word "justification" or
+    # "example"), ignore it and treat as missing.
+    if tlm_id:
+        candidate = tlm_id.strip()
+        lowcand = candidate.lower()
+        # Discard if no alphanumeric characters
+        if not re.search(r"[a-z0-9]", lowcand):
+            tlm_id = ""
+        # Discard if it contains common template words
+        elif "justification" in lowcand or "example" in lowcand:
+            tlm_id = ""
+
+    # If no valid TLM ID is provided, check for a Third-Party Name to use as the name
     if not tlm_id:
         third_party_match = re.search(r"Third\s*-?Party\s*Name.*?:\s*(.+)", issue_text, re.IGNORECASE)
         if third_party_match:
