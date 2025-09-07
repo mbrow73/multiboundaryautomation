@@ -1,5 +1,5 @@
 ---
-name: VPC Service Controls Request
+name: VPC Service Controls Request MD
 about: Request to add one or more ingress/egress rules to one or more VPC Service Controls perimeters
 labels: vpc-sc-request
 ---
