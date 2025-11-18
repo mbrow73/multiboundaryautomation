@@ -1,0 +1,10 @@
+{
+  "last_updated": "2024-01-15T02:00:00Z",
+  "project_count": 4,
+  "projects": {
+    "1111111111": "test-perim-a",
+    "2222222222": "test-perim-b",
+    "3333333333": "test-perim-a",
+    "4444444444": "test-perim-b"
+  }
+}
