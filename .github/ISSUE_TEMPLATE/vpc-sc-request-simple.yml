@@ -1,5 +1,5 @@
-name: 🔒 VPC Service Controls Access Request
-description: Get help accessing GCP services across VPC SC perimeters
+name: "🔒 VPC Service Controls Access Request"
+description: "Get help accessing GCP services across VPC SC perimeters"
 title: "[VPC SC] "
 labels: [vpc-sc-request]
 
@@ -20,14 +20,14 @@ body:
     attributes:
       label: Request ID
       description: Your ticket number (e.g., from ServiceNow, Jira)
-      placeholder: REQ1234567 or TICKET-456
+      placeholder: "REQ1234567 or TICKET-456"
     validations:
       required: true
 
   - type: textarea
     id: error_message
     attributes:
-      label: 📋 Error Message (if you have one)
+      label: "📋 Error Message (if you have one)"
       description: |
         **Paste the error you're seeing** (if applicable)
         This helps us understand exactly what's being blocked.
@@ -44,7 +44,7 @@ body:
   - type: textarea
     id: what_trying_to_do
     attributes:
-      label: 🎯 What are you trying to do?
+      label: "🎯 What are you trying to do?"
       description: Describe in plain English what you're trying to accomplish
       placeholder: |
         Examples:
@@ -57,9 +57,9 @@ body:
   - type: input
     id: source_description
     attributes:
-      label: 📤 WHERE is the request coming from?
+      label: "📤 WHERE is the request coming from?"
       description: The service/resource that's trying to access something
-      placeholder: 'Cloud Run service in project my-app-dev OR External IP 203.0.113.50'
+      placeholder: "Cloud Run service in project my-app-dev OR External IP 203.0.113.50"
     validations:
       required: true
 
@@ -84,9 +84,12 @@ body:
   - type: input
     id: dest_description
     attributes:
-      label: 📥 WHAT are you trying to access?
+      label: "📥 WHAT are you trying to access?"
       description: The service/resource you're trying to reach
-      placeholder: "BigQuery dataset in project prod-analytics" or "Storage bucket gs://my-bucket"
+      placeholder: |
+        BigQuery dataset in project prod-analytics
+        or
+        Storage bucket gs://my-bucket
     validations:
       required: true
 
@@ -102,7 +105,7 @@ body:
   - type: dropdown
     id: service
     attributes:
-      label: 🔧 Which GCP Service?
+      label: "🔧 Which GCP Service?"
       description: What service are you trying to use?
       options:
         - BigQuery (bigquery.googleapis.com)
@@ -121,7 +124,7 @@ body:
   - type: dropdown
     id: access_type
     attributes:
-      label: 🔓 What kind of access?
+      label: "🔓 What kind of access?"
       description: What operations do you need to perform?
       options:
         - Read Only (list, get, read data)
@@ -134,7 +137,7 @@ body:
   - type: input
     id: external_ip
     attributes:
-      label: 🌐 External IP Address (if applicable)
+      label: "🌐 External IP Address (if applicable)"
       description: If accessing from outside GCP, what's the source IP?
       placeholder: "203.0.113.50 or 203.0.113.0/24"
     validations:
@@ -143,7 +146,7 @@ body:
   - type: textarea
     id: justification
     attributes:
-      label: 💼 Business Justification
+      label: "💼 Business Justification"
       description: Why do you need this access? What's the business use case?
       placeholder: |
         Example:
@@ -155,7 +158,7 @@ body:
   - type: dropdown
     id: urgency
     attributes:
-      label: ⏰ How urgent is this?
+      label: "⏰ How urgent is this?"
       options:
         - Normal (24-48 hours is fine)
         - Urgent (production issue, need within 4 hours)
