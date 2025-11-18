@@ -59,7 +59,7 @@ body:
     attributes:
       label: 📤 WHERE is the request coming from?
       description: The service/resource that's trying to access something
-      placeholder: "Cloud Run service in project my-app-dev" or "External IP 203.0.113.50"
+      placeholder: 'Cloud Run service in project my-app-dev OR External IP 203.0.113.50'
     validations:
       required: true
 
