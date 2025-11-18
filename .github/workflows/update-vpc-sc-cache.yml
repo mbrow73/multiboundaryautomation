@@ -1,0 +1,52 @@
+name: Update VPC SC Project Cache
+
+on:
+  schedule:
+    # Run daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:  # Allow manual trigger
+
+permissions:
+  contents: write
+
+jobs:
+  update-cache:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install pyyaml
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Update project cache
+        run: |
+          python3 .github/scripts/update_project_perimeter_cache.py \
+            --router-file router.yml \
+            --cache-file vpc_sc_project_cache.json
+
+      - name: Commit cache if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          if git diff --quiet vpc_sc_project_cache.json; then
+            echo "No changes to cache"
+          else
+            git add vpc_sc_project_cache.json
+            git commit -m "chore: Update VPC SC project cache [skip ci]"
+            git push
+          fi

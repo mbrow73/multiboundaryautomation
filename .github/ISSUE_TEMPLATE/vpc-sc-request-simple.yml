@@ -1,5 +1,5 @@
-name: "🔒 VPC Service Controls Access Request"
-description: "Get help accessing GCP services across VPC SC perimeters"
+name: 🔒 VPC Service Controls Access Request
+description: Fix VPC SC access errors quickly
 title: "[VPC SC] "
 labels: [vpc-sc-request]
 
@@ -7,97 +7,74 @@ body:
   - type: markdown
     attributes:
       value: |
-        ## 🆘 Get Access to GCP Services
+        ## Quick VPC SC Access Request
 
-        **Having trouble accessing a GCP service?** We'll help you fix it.
+        **Got a VPC SC error?** Paste it below and we'll handle the rest!
 
-        Just answer a few questions - we'll figure out the technical details for you.
+        Most fields are optional - we auto-detect from your error message.
 
         ---
 
   - type: input
     id: reqid
     attributes:
-      label: Request ID
-      description: Your ticket number (e.g., from ServiceNow, Jira)
-      placeholder: "REQ1234567 or TICKET-456"
+      label: Request/Ticket ID
+      placeholder: REQ1234567
     validations:
       required: true
 
   - type: textarea
     id: error_message
     attributes:
-      label: "📋 Error Message (if you have one)"
+      label: ⭐ ERROR MESSAGE - Paste your full error here
       description: |
-        **Paste the error you're seeing** (if applicable)
-        This helps us understand exactly what's being blocked.
+        **PASTE YOUR FULL VPC SC ERROR MESSAGE**
+        We auto-extract: perimeter names, services, project numbers, and more!
       placeholder: |
+        Paste the full error from Cloud Console, logs, or your terminal.
+
         Example:
-        Request is prohibited by organization's policy. vpcServiceControlsUniqueIdentifier: ABC123...
-
-        OR
-
-        Access denied. Service 'storage.googleapis.com' is not accessible from this perimeter.
+        Request is prohibited by organization's policy.
+        vpcServiceControlsUniqueIdentifier: yBL4S...
+        serviceName: "bigquery.googleapis.com"
+        resourceName: "projects/987654321/datasets/my_dataset"
+        perimeterName: "accessPolicies/123/servicePerimeters/prod-data-perimeter"
     validations:
       required: false
 
   - type: textarea
     id: what_trying_to_do
     attributes:
-      label: "🎯 What are you trying to do?"
-      description: Describe in plain English what you're trying to accomplish
+      label: What are you trying to do?
+      description: Describe in plain English (helps if error message is incomplete)
       placeholder: |
-        Examples:
-        - "I'm trying to read data from a BigQuery dataset in project prod-analytics from my Cloud Run service in project dev-app"
-        - "My Cloud Function needs to write to a Storage bucket in a different project"
-        - "I need to access Pub/Sub topics from an external service"
+        Example: "Reading BigQuery data from prod project in my dev Cloud Run service"
     validations:
       required: true
 
   - type: input
-    id: source_description
+    id: source_identity
     attributes:
-      label: "📤 WHERE is the request coming from?"
-      description: The service/resource that's trying to access something
-      placeholder: "Cloud Run service in project my-app-dev OR External IP 203.0.113.50"
+      label: Service Account
+      description: What service account is making the request?
+      placeholder: my-service@my-project.iam.gserviceaccount.com
     validations:
       required: true
 
   - type: input
     id: source_project
     attributes:
-      label: Source Project Number (if known)
-      description: The numeric project ID (not the name)
+      label: Source Project Number (optional if in error)
+      description: Where is the request coming FROM?
       placeholder: "1234567890"
     validations:
       required: false
 
   - type: input
-    id: source_identity
-    attributes:
-      label: Service Account or Identity
-      description: The service account making the request
-      placeholder: "my-service@my-project.iam.gserviceaccount.com"
-    validations:
-      required: true
-
-  - type: input
-    id: dest_description
-    attributes:
-      label: "📥 WHAT are you trying to access?"
-      description: The service/resource you're trying to reach
-      placeholder: |
-        BigQuery dataset in project prod-analytics
-        or
-        Storage bucket gs://my-bucket
-    validations:
-      required: true
-
-  - type: input
     id: dest_project
     attributes:
-      label: Destination Project Number (if known)
-      description: The numeric project ID where the resource lives
+      label: Destination Project Number (optional if in error)
+      description: What project are you trying to ACCESS?
       placeholder: "9876543210"
     validations:
       required: false
@@ -105,64 +82,70 @@ body:
   - type: dropdown
     id: service
     attributes:
-      label: "🔧 Which GCP Service?"
-      description: What service are you trying to use?
+      label: GCP Service (optional if in error)
       options:
-        - BigQuery (bigquery.googleapis.com)
-        - Cloud Storage (storage.googleapis.com)
-        - Pub/Sub (pubsub.googleapis.com)
-        - Cloud Run (run.googleapis.com)
-        - Artifact Registry (artifactregistry.googleapis.com)
-        - Compute Engine (compute.googleapis.com)
-        - Cloud Logging (logging.googleapis.com)
-        - IAM (iam.googleapis.com)
-        - Container Registry (containerregistry.googleapis.com)
-        - Other (specify in justification)
+        - (Will auto-detect from error)
+        - bigquery.googleapis.com
+        - storage.googleapis.com
+        - pubsub.googleapis.com
+        - run.googleapis.com
+        - artifactregistry.googleapis.com
+        - compute.googleapis.com
+        - logging.googleapis.com
+        - iam.googleapis.com
+        - Other
     validations:
-      required: true
-
-  - type: dropdown
-    id: access_type
-    attributes:
-      label: "🔓 What kind of access?"
-      description: What operations do you need to perform?
-      options:
-        - Read Only (list, get, read data)
-        - Write Only (create, update, delete)
-        - Read and Write (full access)
-        - Specific operations (describe in justification)
-    validations:
-      required: true
+      required: false
 
   - type: input
     id: external_ip
     attributes:
-      label: "🌐 External IP Address (if applicable)"
-      description: If accessing from outside GCP, what's the source IP?
-      placeholder: "203.0.113.50 or 203.0.113.0/24"
+      label: External IP (only if accessing from outside GCP)
+      placeholder: "203.0.113.50/32"
+    validations:
+      required: false
+
+  - type: dropdown
+    id: source_perimeter
+    attributes:
+      label: Source Perimeter (optional - we auto-detect)
+      description: Only fill if you know it and it's NOT in the error
+      options:
+        - (Auto-detect from error or cache)
+        - test-perim-a
+        - test-perim-b
+    validations:
+      required: false
+
+  - type: dropdown
+    id: dest_perimeter
+    attributes:
+      label: Destination Perimeter (optional - we auto-detect)
+      description: Only fill if you know it and it's NOT in the error
+      options:
+        - (Auto-detect from error or cache)
+        - test-perim-a
+        - test-perim-b
     validations:
       required: false
 
   - type: textarea
     id: justification
     attributes:
-      label: "💼 Business Justification"
-      description: Why do you need this access? What's the business use case?
-      placeholder: |
-        Example:
-        Our ETL pipeline in dev-app needs to read customer data from the prod-analytics BigQuery dataset
-        to generate daily reports. This is part of the Q1 Analytics initiative (approved by VP Engineering).
+      label: Business Justification
+      description: Why do you need this access?
+      placeholder: Our ETL pipeline needs this data for daily reports...
     validations:
       required: true
 
   - type: dropdown
     id: urgency
     attributes:
-      label: "⏰ How urgent is this?"
+      label: Urgency
       options:
-        - Normal (24-48 hours is fine)
-        - Urgent (production issue, need within 4 hours)
-        - Critical (production down, need ASAP)
+        - Normal (24-48 hours)
+        - Urgent (4 hours)
+        - Critical (production down)
     validations:
       required: true
 
@@ -171,15 +154,12 @@ body:
       value: |
         ---
 
-        ## ✨ What Happens Next?
+        ## What Happens Next?
 
-        1. 🤖 **Automatic Translation** - We'll convert your description into the right VPC SC rules
-        2. ✅ **Validation** - Check that everything is correct
-        3. 📋 **PR Creation** - Create pull requests to the right perimeter repositories
-        4. 👀 **NetSec Review** - Security team reviews (usually < 24 hours)
-        5. 🚀 **Deployment** - Rules deployed automatically on approval
-        6. 💬 **Notification** - You'll get a comment when it's done!
+        1. 🤖 We auto-extract perimeters, services, projects from your error
+        2. ✅ Create the right INGRESS/EGRESS rules automatically
+        3. 📋 PRs created to the correct perimeter repos
+        4. 👀 NetSec reviews (usually < 24 hours)
+        5. 🚀 Auto-deploys when approved
 
-        **Questions?** Comment on this issue after submission.
-
-        ---
+        **Questions?** Comment on this issue after submitting.
